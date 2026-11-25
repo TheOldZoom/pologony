@@ -21,8 +21,9 @@ COPY server ./server
 COPY web/src/strings.ts ./web/src/strings.ts
 COPY --from=build /app/web/dist ./web/dist
 
-ENV NODE_ENV=production PORT=3000
+ENV NODE_ENV=production
 USER bun
+ARG PORT=3000
 EXPOSE 3000
 
 CMD ["bun", "server/index.ts"]
