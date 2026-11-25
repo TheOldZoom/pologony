@@ -1,0 +1,13 @@
+{
+  "singleQuote": true,
+  "printWidth": 100,
+  "overrides": [
+    {
+      "files": "web/src/avatars.tsx",
+      "options": {
+        "singleQuote": false,
+        "printWidth": 80
+      }
+    }
+  ]
+}
