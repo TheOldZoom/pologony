@@ -1,30 +1,57 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from 'react';
 import qrcode from 'qrcode-generator';
 import {
-  BUY_SECONDS,
-  GAME_MINUTES,
-  MAX_NAME_LENGTH,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  CircleQuestionMark,
+  Lightbulb,
+  Maximize,
+  Minimize,
+  Minus,
+  Play,
+  X,
+} from 'lucide-react';
+import {
+  AVATAR_IDS,
   MAX_PLAYERS,
-  QUESTION_SECONDS,
-  ROLL_SECONDS,
   ROOM_ALPHABET,
   TILES,
   netWorth,
+  topicTheme,
+  type AnswerResult,
   type ClientMsg,
   type GameEvent,
+  type Language,
   type Player,
   type PublicQuestion,
   type PublicState,
+  type QuestionSolution,
   type ServerMsg,
+  type Topic,
 } from '../../shared/game';
-import Board, { TileIcon } from './Board';
-import Polygon from './Polygon';
-import { Avatar, AVATARS } from './avatars';
-import { strings as s } from './strings';
+import Board, { ChessBoard, chessMoveLabel, PlayerAvatar, TileIcon } from './Board';
+import { TopicArt, propertyName } from './TopicArt';
+import { GameSettingsScreen, Home, LanguagePicker, SettingsSummary } from './RoomSetup';
+import {
+  LanguageContext,
+  strings as wireStrings,
+  useLanguage,
+  useStrings,
+  type Strings,
+} from './strings';
 
 type SavedSeat = { code: string; token: string; you: string };
 type Snapshot = { state: PublicState; offset: number; connection: number };
-type AnswerResult = NonNullable<PublicState['result']>;
+type ReviewPanel = 'answers' | 'recap';
 type Toast = { event: GameEvent; expires: number };
 const seatKey = 'polygon-monopoly-seat';
 const inviteParam = 'room';
@@ -34,6 +61,12 @@ function invitedRoomCode(url = new URL(location.href)): string {
   return code.length === 4 && Array.from(code).every((letter) => ROOM_ALPHABET.includes(letter))
     ? code
     : '';
+}
+
+function resetHomeAddress() {
+  if (location.pathname !== '/' || location.search || location.hash) {
+    history.replaceState(history.state, '', '/');
+  }
 }
 
 function loadSeat(): SavedSeat | undefined {
@@ -67,7 +100,7 @@ function useConnection() {
   const [initialSeat] = useState(loadSeat);
   const saved = useRef(initialSeat);
   const socket = useRef<WebSocket | null>(null);
-  const pending = useRef(false);
+  const pending = useRef<ClientMsg['t']>(undefined);
   const lastSeenEventId = useRef(0);
   const connection = useRef(0);
   const [cycle, setCycle] = useState(0);
@@ -76,6 +109,7 @@ function useConnection() {
   const [ready, setReady] = useState(false);
   const [retrying, setRetrying] = useState(Boolean(initialSeat));
   const [error, setError] = useState('');
+  const [leaving, setLeaving] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   useEffect(() => {
@@ -95,7 +129,11 @@ function useConnection() {
         if (seat) {
           rejoining = true;
           ws.send(
-            JSON.stringify({ t: 'rejoin', code: seat.code, token: seat.token } satisfies ClientMsg),
+            JSON.stringify({
+              t: 'rejoin',
+              code: seat.code,
+              token: seat.token,
+            } satisfies ClientMsg),
           );
         } else {
           setReady(true);
@@ -111,12 +149,20 @@ function useConnection() {
           setYou(message.you);
           return;
         }
-        pending.current = false;
+        if (message.t === 'left') {
+          home(message.reason === 'projector-ended' ? wireStrings.sessionEnded : '');
+          return;
+        }
         if (message.t === 'state') {
+          if (firstState || pending.current !== 'leave') pending.current = undefined;
           const state = message.state;
           const now = Date.now();
           if (welcome) {
-            saved.current = { code: state.code, token: welcome.token, you: welcome.you };
+            saved.current = {
+              code: state.code,
+              token: welcome.token,
+              you: welcome.you,
+            };
             saveSeat(saved.current);
             const url = new URL(location.href);
             if (invitedRoomCode(url) === state.code) {
@@ -129,6 +175,7 @@ function useConnection() {
             firstState = false;
             connection.current += 1;
             setToasts([]);
+            setLeaving(false);
           } else {
             const id = saved.current?.you;
             const fresh = state.events.filter((event) => event.id > lastSeenEventId.current);
@@ -147,18 +194,31 @@ function useConnection() {
                   navigator.vibrate?.(50);
                 return { event, expires: now + (mine ? 4000 : 2500) };
               });
-              setToasts((shown) =>
-                [...shown.filter(({ expires }) => expires > now), ...entries].slice(-3),
+              setToasts((current) =>
+                [
+                  ...(fresh.some((event) => event.kind === 'rematch')
+                    ? []
+                    : current.filter(({ expires }) => expires > now)),
+                  ...entries,
+                ].slice(-3),
               );
             }
           }
           lastSeenEventId.current = state.events.at(-1)?.id ?? 0;
-          setSnapshot({ state, offset: state.now - now, connection: connection.current });
+          setSnapshot({
+            state,
+            offset: state.now - now,
+            connection: connection.current,
+          });
           setReady(true);
           setRetrying(false);
           setError('');
         } else {
           if (rejoining) {
+            if (pending.current === 'leave') {
+              home();
+              return;
+            }
             rejoining = false;
             saved.current = undefined;
             clearSeat(true);
@@ -167,19 +227,23 @@ function useConnection() {
             setReady(true);
             setRetrying(false);
           }
+          pending.current = undefined;
+          setLeaving(false);
           setError(message.msg);
         }
       };
       ws.onclose = (event) => {
         if (disposed) return;
-        pending.current = false;
+        if (pending.current !== 'leave') pending.current = undefined;
         setToasts([]);
-        if (event.code === 4000) {
+        if (event.code === 4000 || event.code === 4001) {
+          pending.current = undefined;
+          setLeaving(false);
           saved.current = undefined;
-          clearSeat(false);
+          clearSeat(event.code === 4001);
           setSnapshot(undefined);
           setYou(undefined);
-          setError(s.error.seatMoved);
+          setError(event.code === 4001 ? wireStrings.error.removed : wireStrings.error.seatMoved);
         }
         setReady(false);
         setRetrying(true);
@@ -198,7 +262,7 @@ function useConnection() {
     if (!toasts.length) return;
     const next = Math.min(...toasts.map(({ expires }) => expires));
     const timer = setTimeout(
-      () => setToasts((shown) => shown.filter(({ expires }) => expires > Date.now())),
+      () => setToasts((current) => current.filter(({ expires }) => expires > Date.now())),
       Math.max(1, next - Date.now()),
     );
     return () => clearTimeout(timer);
@@ -208,128 +272,119 @@ function useConnection() {
     const ws = socket.current;
     if (!ready || pending.current || ws?.readyState !== WebSocket.OPEN) return false;
     setError('');
-    pending.current = true;
+    pending.current = message.t;
+    if (message.t === 'leave') setLeaving(true);
     ws.send(JSON.stringify(message));
     return true;
   }
 
-  function home() {
+  function backHome() {
+    resetHomeAddress();
+    setError('');
+  }
+
+  function home(message = '') {
     saved.current = undefined;
     clearSeat(true);
-    pending.current = false;
+    resetHomeAddress();
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+    pending.current = undefined;
+    setLeaving(false);
     setReady(false);
     setRetrying(false);
     setSnapshot(undefined);
     setYou(undefined);
-    setError('');
+    setError(message);
     setToasts([]);
     setCycle((value) => value + 1);
   }
 
-  return { snapshot, you, send, ready, retrying, error, home, toasts };
+  return {
+    snapshot,
+    you,
+    send,
+    ready,
+    retrying,
+    error,
+    leaving,
+    backHome,
+    toasts,
+  };
 }
 
-function PlayerToken({ player, size = 24 }: { player: Player; size?: number }) {
+function ExitConfirmation({
+  state,
+  you,
+  ready,
+  leaving,
+  status,
+  close,
+  confirm,
+}: {
+  state: PublicState;
+  you?: string;
+  ready: boolean;
+  leaving: boolean;
+  status: string;
+  close: () => void;
+  confirm: () => void;
+}) {
+  const s = useStrings();
+  const lobby = state.phase === 'lobby';
+  const host = you === state.hostId;
+  const presenter = host && state.mode === 'projector';
+  const remaining = state.players.filter(({ id }) => id !== you).length;
+  const action = presenter ? s.endSession : lobby ? s.leaveRoom : s.leaveGame;
+  const seat = lobby ? s.exit.freeSeat : s.exit.forfeit;
+  let consequence = '';
+  if (presenter) {
+    consequence = lobby ? s.exit.closeProjector : s.exit.finishProjector;
+  } else if (state.mode === 'practice') {
+    consequence = s.exit.practice;
+  } else if (state.mode === 'friends' && remaining === 0) {
+    consequence = s.exit.lastPlayer;
+  } else {
+    if (state.mode === 'friends' && host) consequence = s.exit.handoff;
+    if (!lobby && remaining === 1) consequence += `${consequence ? ' ' : ''}${s.exit.lastOpponent}`;
+  }
+
+  return (
+    <InfoDialog title={s.exit.question(action)} close={close} dismissible={!leaving}>
+      <div className="exit-confirmation">
+        {!presenter && state.mode !== 'practice' && <p>{seat}</p>}
+        {consequence && <p>{consequence}</p>}
+        <div className="exit-actions">
+          <button className="action secondary" onClick={close} disabled={leaving}>
+            {s.cancel}
+          </button>
+          <button className="action danger" disabled={!ready || leaving} onClick={confirm}>
+            {leaving ? s.leaving : action}
+          </button>
+        </div>
+        {status && <p role="status">{status}</p>}
+      </div>
+    </InfoDialog>
+  );
+}
+
+function PlayerToken({ player, size = 30 }: { player: Player; size?: number }) {
   return (
     <span
       className="player-token"
-      style={{ backgroundColor: player.color, width: size + 6, height: size + 6 }}
+      style={{
+        backgroundColor: player.color,
+        width: size + 6,
+        height: size + 6,
+      }}
       aria-hidden="true"
     >
-      <Avatar id={player.avatar} size={size} />
+      <PlayerAvatar id={player.avatar} />
     </span>
   );
 }
 
-function Home({ ready, send }: { ready: boolean; send: (message: ClientMsg) => void }) {
-  const [name, setName] = useState('');
-  const [code, setCode] = useState(() => invitedRoomCode());
-  const nickname = name.trim();
-
-  return (
-    <main className="home">
-      <div className="home-hero">
-        <div className="hero-shapes" aria-hidden="true">
-          <div className="hero-triangle">
-            <Polygon n={3} fill="#ffcb57" label />
-          </div>
-          <div className="hero-hexagon">
-            <Polygon n={6} fill="#bdf4e4" label />
-          </div>
-          <div className="hero-octagon">
-            <Polygon n={8} fill="#dcd5ff" label />
-          </div>
-        </div>
-        <p className="home-meta">{s.invite(MAX_PLAYERS, GAME_MINUTES)}</p>
-        <h1>{s.title}</h1>
-      </div>
-      <form
-        className="home-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (code.length === 4) send({ t: 'join', name: nickname, code });
-          else if (!code) send({ t: 'create', name: nickname });
-        }}
-      >
-        <label htmlFor="nickname">{s.nickname}</label>
-        <input
-          id="nickname"
-          placeholder={s.nicknameHint}
-          name="nickname"
-          maxLength={MAX_NAME_LENGTH}
-          autoComplete="nickname"
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-        />
-        <div className="home-modes">
-          <button
-            type="button"
-            className="action primary"
-            disabled={!ready || !nickname}
-            onClick={() => send({ t: 'create', name: nickname })}
-          >
-            {s.create}
-          </button>
-          <button
-            type="button"
-            className="action secondary"
-            disabled={!ready || !nickname}
-            onClick={() => send({ t: 'create', name: nickname, withBot: true })}
-          >
-            {s.playBot}
-          </button>
-        </div>
-        <div className="join-fields">
-          <label htmlFor="room-code">{s.code}</label>
-          <input
-            id="room-code"
-            placeholder={s.codeHint}
-            name="room-code"
-            autoComplete="off"
-            autoCapitalize="characters"
-            spellCheck={false}
-            value={code}
-            onChange={(event) => {
-              const letters = Array.from(event.target.value.toUpperCase()).filter((letter) =>
-                ROOM_ALPHABET.includes(letter),
-              );
-              setCode(letters.slice(0, 4).join(''));
-            }}
-          />
-          <button
-            type="submit"
-            className="action secondary"
-            disabled={!ready || !nickname || code.length !== 4}
-          >
-            {s.join}
-          </button>
-        </div>
-      </form>
-    </main>
-  );
-}
-
 function LobbyInvite({ code }: { code: string }) {
+  const s = useStrings();
   const [expanded, setExpanded] = useState(false);
   const image = useMemo(() => {
     const url = new URL('/', location.origin);
@@ -366,24 +421,143 @@ function LobbyInvite({ code }: { code: string }) {
   );
 }
 
+function FullscreenButton() {
+  const s = useStrings();
+  const [active, setActive] = useState(Boolean(document.fullscreenElement));
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    const update = () => setActive(Boolean(document.fullscreenElement));
+    document.addEventListener('fullscreenchange', update);
+    return () => document.removeEventListener('fullscreenchange', update);
+  }, []);
+  if (!document.fullscreenEnabled) return null;
+  const label = active ? s.exitFullscreen : s.fullscreen;
+  const Icon = active ? Minimize : Maximize;
+  return (
+    <div className="fullscreen-control">
+      <button
+        className="action secondary"
+        aria-label={label}
+        onClick={async () => {
+          setFailed(false);
+          try {
+            if (document.fullscreenElement) await document.exitFullscreen();
+            else await document.documentElement.requestFullscreen();
+          } catch {
+            setFailed(true);
+          }
+        }}
+      >
+        <span className="fullscreen-label">{label}</span>
+        <Icon className="fullscreen-icon" size={20} aria-hidden="true" />
+      </button>
+      {failed && <span role="status">{s.noFullscreen}</span>}
+    </div>
+  );
+}
+
+function HostRoster({
+  state,
+  send,
+  ready,
+  close,
+}: {
+  state: PublicState;
+  send: (message: ClientMsg) => boolean;
+  ready: boolean;
+  close: () => void;
+}) {
+  const s = useStrings();
+  const [selected, select] = useState<string>();
+  const player = state.players.find(({ id }) => id === selected);
+  return (
+    <InfoDialog title={s.managePlayers} close={close}>
+      {player ? (
+        <div className="remove-confirmation">
+          <p>{s.confirmRemove(player.name)}</p>
+          <button className="action secondary" onClick={() => select(undefined)}>
+            {s.cancel}
+          </button>
+          <button
+            className="action danger"
+            disabled={!ready}
+            onClick={() => {
+              if (send({ t: 'remove', player: player.id })) select(undefined);
+            }}
+          >
+            {s.removePlayer}
+          </button>
+        </div>
+      ) : state.players.length ? (
+        <ul className="player-list">
+          {state.players.map((candidate) => (
+            <li key={candidate.id}>
+              <PlayerToken player={candidate} />
+              <span className="player-name">{candidate.name}</span>
+              {!candidate.connected && <span className="player-status">{s.offline}</span>}
+              <button
+                className="action secondary"
+                disabled={!ready}
+                onClick={() => select(candidate.id)}
+                aria-label={s.removePlayerLabel(candidate.name)}
+              >
+                {s.remove}
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p>{s.noPlayers}</p>
+      )}
+    </InfoDialog>
+  );
+}
+
 function Lobby({
   state,
   you,
   ready,
   send,
-  home,
+  openExit,
+  openHowTo,
+  openReview,
 }: {
   state: PublicState;
   you?: string;
   ready: boolean;
-  send: (message: ClientMsg) => void;
-  home: () => void;
+  send: (message: ClientMsg) => boolean;
+  openExit: () => void;
+  openHowTo: () => void;
+  openReview: (panel: ReviewPanel) => void;
 }) {
+  const s = useStrings();
   const host = you === state.hostId;
   const me = state.players.find((player) => player.id === you);
   const bot = state.players.find((player) => player.bot);
+  const presenter = host && state.mode === 'projector';
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [rosterOpen, setRosterOpen] = useState(false);
+  const canStart = state.players.filter(({ connected }) => connected).length >= 2;
+  if (setupOpen && host) {
+    return (
+      <GameSettingsScreen
+        settings={state.settings}
+        ready={ready}
+        close={() => setSetupOpen(false)}
+        openExit={openExit}
+        save={(settings) => send({ t: 'settings', settings })}
+      />
+    );
+  }
   return (
-    <main className="lobby">
+    <main className="lobby entrance">
+      <header className="lobby-heading">
+        <strong>{s.title}</strong>
+        <div className="lobby-heading-tools">
+          {presenter && <FullscreenButton />}
+          <LanguagePicker />
+        </div>
+      </header>
       {bot ? (
         <section className="room-ticket practice-ticket">
           <div>
@@ -395,39 +569,78 @@ function Lobby({
       ) : (
         <LobbyInvite code={state.code} />
       )}
+      <section className="lobby-setup" aria-label={s.setup.setup}>
+        <SettingsSummary settings={state.settings} />
+        <p className="rules-summary">{s.rulesSummary}</p>
+        <div className="lobby-tools">
+          {host && (
+            <button className="action secondary" onClick={() => setSetupOpen(true)}>
+              {s.setup.settings}
+            </button>
+          )}
+          <button className="action secondary" onClick={openHowTo}>
+            {s.howTo}
+          </button>
+          {presenter && (
+            <button className="action secondary" onClick={() => setRosterOpen(true)}>
+              {s.managePlayers}
+            </button>
+          )}
+        </div>
+      </section>
       <div className="lobby-content">
-        <h2 className="section-label">{s.players(state.players.length, bot ? 2 : MAX_PLAYERS)}</h2>
-        <ul className="player-list">
-          {state.players.map((player) => (
-            <li key={player.id}>
-              <PlayerToken player={player} />
-              <span className="player-name">{player.name}</span>
-              <span className="player-status">
-                {player.id === you && <span>{s.you}</span>}
-                {player.id === state.hostId && <span>{s.host}</span>}
-                {player.bot && <span>{s.computer}</span>}
-                {!player.connected && <span>{s.offline}</span>}
-              </span>
-            </li>
-          ))}
-        </ul>
+        {state.matchReview && <ReviewButtons personal={Boolean(me)} open={openReview} />}
+        <section className="lobby-lineup" aria-labelledby="lineup-heading">
+          <header className="lineup-heading">
+            <h2 id="lineup-heading">{s.players}</h2>
+            <span>{s.seats(state.players.length, bot ? 2 : MAX_PLAYERS)}</span>
+          </header>
+          {state.players.length ? (
+            <ul className="lobby-roster">
+              {state.players.map((player) => (
+                <li key={player.id} className={player.id === you ? 'your-seat' : undefined}>
+                  <PlayerToken player={player} size={32} />
+                  <div className="lobby-seat-copy">
+                    <span className="player-name">{player.name}</span>
+                    <span className="player-status">
+                      {player.id === you && <span>{s.you}</span>}
+                      {player.id === state.hostId && <span>{s.host}</span>}
+                      {player.bot && <span>{s.computer}</span>}
+                      {!player.connected && <span>{s.offline}</span>}
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="empty-lineup">{s.noPlayers}</p>
+          )}
+        </section>
         {me && (
           <section className="avatar-picker" aria-labelledby="avatar-heading">
-            <h2 id="avatar-heading" className="section-label">
-              {s.chooseAvatar}
-            </h2>
+            <header className="avatar-picker-heading">
+              <h2 id="avatar-heading">{s.chooseAvatar}</h2>
+              <div className="avatar-preview" aria-live="polite">
+                <PlayerToken key={me.avatar} player={me} size={32} />
+                <span className="sr-only">{s.selectedAvatar} </span>
+                <strong>{s.avatars[me.avatar]}</strong>
+              </div>
+            </header>
             <div className="avatar-grid">
-              {AVATARS.map(({ id, name }) => {
+              {AVATAR_IDS.map((id) => {
+                const name = s.avatars[id];
                 const claimant = state.players.find(
                   (player) => player.id !== me.id && player.avatar === id,
                 );
                 const selected = id === me.avatar;
+                const label = claimant ? s.avatarClaimedBy(name, claimant.name) : name;
                 return (
                   <button
                     type="button"
                     key={id}
                     className={claimant ? 'avatar-choice avatar-taken' : 'avatar-choice'}
-                    aria-label={claimant ? s.avatarClaimedBy(name, claimant.name) : name}
+                    aria-label={label}
+                    title={claimant ? label : undefined}
                     aria-pressed={selected}
                     disabled={!ready || Boolean(claimant)}
                     onClick={() => {
@@ -435,17 +648,26 @@ function Lobby({
                     }}
                   >
                     <span
-                      className="avatar-circle"
-                      aria-hidden="true"
+                      className="avatar-icon"
                       style={{
-                        backgroundColor: claimant
-                          ? `color-mix(in srgb, ${me.color} 55%, white)`
-                          : me.color,
-                        outlineColor: claimant?.color,
+                        backgroundColor: me.color,
+                        borderColor: claimant?.color,
                       }}
+                      aria-hidden="true"
                     >
-                      <Avatar id={id} size={36} />
+                      <PlayerAvatar id={id} />
                     </span>
+                    <span className="avatar-label">{name}</span>
+                    {selected && (
+                      <span className="avatar-mark" aria-hidden="true">
+                        <Check size={10} strokeWidth={3} />
+                      </span>
+                    )}
+                    {claimant && (
+                      <span className="avatar-mark taken-mark" aria-hidden="true">
+                        <X size={10} strokeWidth={3} />
+                      </span>
+                    )}
                   </button>
                 );
               })}
@@ -456,41 +678,70 @@ function Lobby({
       <div className="lobby-footer">
         {host ? (
           <>
-            {state.players.length < 2 && <p>{s.waitForPlayers}</p>}
+            {!canStart && <p>{s.waitForPlayers}</p>}
             <button
               className="action primary"
-              disabled={!ready || state.players.length < 2}
+              disabled={!ready || !canStart}
               onClick={() => send({ t: 'start' })}
             >
               {bot ? s.startPractice : s.start}
             </button>
-            {bot && (
-              <button className="action secondary" onClick={home}>
-                {s.backHome}
-              </button>
-            )}
           </>
         ) : (
           <p>{s.waitForHost}</p>
         )}
+        <button className="action secondary" onClick={openExit}>
+          {presenter ? s.endSession : s.leaveRoom}
+        </button>
       </div>
+      {rosterOpen && presenter && (
+        <HostRoster state={state} ready={ready} send={send} close={() => setRosterOpen(false)} />
+      )}
     </main>
   );
 }
 
-function Results({ state, home }: { state: PublicState; home: () => void }) {
-  const ranked = state.players
-    .map((player) => ({ player, worth: netWorth(player, state.owners) }))
-    .sort((a, b) => b.worth - a.worth);
+function Results({
+  state,
+  home,
+  ready,
+  leaving,
+  presenter,
+  rematch,
+  personal,
+  openReview,
+}: {
+  state: PublicState;
+  home: () => void;
+  ready: boolean;
+  leaving: boolean;
+  presenter: boolean;
+  rematch?: () => void;
+  personal: boolean;
+  openReview: (panel: ReviewPanel) => void;
+}) {
+  const s = useStrings();
+  const ranked = state.standings ?? [];
   const winners = ranked
-    .filter(({ worth }) => worth === ranked[0].worth)
+    .filter(({ worth }) => worth === ranked[0]?.worth)
     .map(({ player }) => player.name);
 
   return (
-    <main className="results">
+    <main className="results entrance">
+      <LanguagePicker />
       <section className="room-ticket">
-        <p>{s.gameOver}</p>
-        <h1>{winners.length === 1 ? s.winner(winners[0]) : s.tied(winners)}</h1>
+        <p className="topic-caption">
+          <TopicArt topic={state.settings.topic} />
+          {s.gameOver} · {s.topics[state.settings.topic]}
+        </p>
+        <h1>
+          {winners.length === 0
+            ? s.gameOver
+            : winners.length === 1
+              ? s.winner(winners[0])
+              : s.tied(winners)}
+        </h1>
+        {state.endedByHost && <p>{s.sessionEnded}</p>}
       </section>
       <h2 className="section-label">{s.netWorth}</h2>
       <ol className="player-list ranking">
@@ -503,23 +754,64 @@ function Results({ state, home }: { state: PublicState; home: () => void }) {
           </li>
         ))}
       </ol>
-      <button className="action primary" onClick={home}>
-        {s.backHome}
-      </button>
+      {presenter && <FullscreenButton />}
+      <div className="results-actions">
+        {state.matchReview && <ReviewButtons personal={personal} open={openReview} />}
+        <div className="results-action-row">
+          {rematch && (
+            <button className="action primary" onClick={rematch} disabled={!ready || leaving}>
+              {s.rematch}
+            </button>
+          )}
+          <button
+            className={rematch ? 'action secondary' : 'action primary'}
+            onClick={home}
+            disabled={!ready || leaving}
+          >
+            {leaving ? s.leaving : s.backHome}
+          </button>
+        </div>
+      </div>
     </main>
+  );
+}
+
+function ReviewButtons({
+  personal,
+  open,
+}: {
+  personal: boolean;
+  open: (panel: ReviewPanel) => void;
+}) {
+  const s = useStrings();
+  return (
+    <div className="results-action-row">
+      {personal && (
+        <button className="action secondary" onClick={() => open('answers')}>
+          {s.matchReview.answers}
+        </button>
+      )}
+      <button className="action secondary" onClick={() => open('recap')}>
+        {s.matchReview.recap}
+      </button>
+    </div>
   );
 }
 
 function InfoDialog({
   title,
   close,
+  dismissible = true,
   children,
 }: {
   title: string;
   close: () => void;
+  dismissible?: boolean;
   children: ReactNode;
 }) {
+  const s = useStrings();
   const dialog = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
   useEffect(() => {
     dialog.current?.showModal();
   }, []);
@@ -527,18 +819,23 @@ function InfoDialog({
     <dialog
       ref={dialog}
       className="info-dialog"
-      aria-labelledby="dialog-title"
-      onCancel={close}
+      aria-labelledby={titleId}
+      onCancel={(event) => {
+        event.preventDefault();
+        if (dismissible) close();
+      }}
       onClick={(event) => {
-        if (event.target === event.currentTarget) close();
+        if (dismissible && event.target === event.currentTarget) close();
       }}
     >
       <div className="info-card">
         <div className="info-heading">
-          <h2 id="dialog-title">{title}</h2>
-          <button className="action secondary close" aria-label={s.close} onClick={close}>
-            ×
-          </button>
+          <h2 id={titleId}>{title}</h2>
+          {dismissible && (
+            <button className="action secondary close" aria-label={s.close} onClick={close}>
+              <X size={18} aria-hidden="true" />
+            </button>
+          )}
         </div>
         <div className="info-scroll">{children}</div>
       </div>
@@ -546,10 +843,65 @@ function InfoDialog({
   );
 }
 
+function HomeFooter() {
+  const { project } = useStrings();
+  const [policy, setPolicy] = useState<'terms' | 'privacy'>();
+  const trigger = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!policy) trigger.current?.focus({ preventScroll: true });
+  }, [policy]);
+
+  return (
+    <footer className="home-footer">
+      <p>
+        <a href="https://github.com/theoldzoom/pologony" target="_blank" rel="noreferrer">
+          {project.credit.link}
+        </a>{' '}
+        {project.credit.text}{' '}
+        <a href="https://zoomhub.xyz/" target="_blank" rel="noreferrer">
+          {project.authors.xavier}
+        </a>{' '}
+        &amp; {project.authors.goat}
+      </p>
+      <div className="home-policy-links">
+        {(['terms', 'privacy'] as const).map((kind) => (
+          <button
+            key={kind}
+            type="button"
+            className="text-button"
+            onClick={(event) => {
+              trigger.current = event.currentTarget;
+              setPolicy(kind);
+            }}
+          >
+            {project[kind].title}
+          </button>
+        ))}
+      </div>
+      {policy && (
+        <InfoDialog title={project[policy].title} close={() => setPolicy(undefined)}>
+          <div className="policy-copy">
+            {project[policy].paragraphs.map((paragraph) => (
+              <p key={paragraph}>{paragraph}</p>
+            ))}
+            {policy === 'terms' && (
+              <a href="https://github.com/theoldzoom/pologony" target="_blank" rel="noreferrer">
+                {project.source}
+              </a>
+            )}
+          </div>
+        </InfoDialog>
+      )}
+    </footer>
+  );
+}
+
 function Owner({ player }: { player?: Player }) {
+  const s = useStrings();
   return (
     <span className="owner">
-      {player && <PlayerToken player={player} size={12} />}
+      {player && <PlayerToken player={player} size={16} />}
       {player?.name ?? s.unowned}
     </span>
   );
@@ -568,13 +920,16 @@ function TileInfo({
   browse: () => void;
   state: PublicState;
 }) {
+  const s = useStrings();
   const tile = TILES[index];
   const owner = state.players.find((player) => player.id === state.owners[index]);
   const occupants = state.players
     .filter((player) => player.pos === index)
     .map((player) => player.name);
   const n = tile.n ?? 0;
-  const title = tile.kind === 'property' ? s.property(n) : s.tileNames[tile.kind];
+  const topic = state.settings.topic;
+  const title =
+    tile.kind === 'property' ? propertyName(s, topic, n, index) : s.tileNames[tile.kind];
   const degrees = (angle: number) => `${Math.round(angle * 100) / 100}°`;
 
   return (
@@ -582,31 +937,37 @@ function TileInfo({
       {tile.kind === 'property' ? (
         <>
           <div className="tile-diagram">
-            <Polygon n={n} mark="both" />
+            <TopicArt topic={topic} sides={n} index={index} mark="both" />
           </div>
-          <div className="diagram-key">
-            <span>
-              <i />
-              {s.apothem}
-            </span>
-            <span>
-              <i />
-              {s.radius}
-            </span>
-          </div>
+          {topic === 'polygons' && (
+            <div className="diagram-key">
+              <span>
+                <i />
+                {s.apothem}
+              </span>
+              <span>
+                <i />
+                {s.radius}
+              </span>
+            </div>
+          )}
           <dl className="facts">
-            <div>
-              <dt>{s.interiorAngle}</dt>
-              <dd>{degrees(((n - 2) * 180) / n)}</dd>
-            </div>
-            <div>
-              <dt>{s.centralAngle}</dt>
-              <dd>{degrees(360 / n)}</dd>
-            </div>
-            <div>
-              <dt>{s.diagonals}</dt>
-              <dd>{(n * (n - 3)) / 2}</dd>
-            </div>
+            {topic === 'polygons' && (
+              <>
+                <div>
+                  <dt>{s.interiorAngle}</dt>
+                  <dd>{degrees(((n - 2) * 180) / n)}</dd>
+                </div>
+                <div>
+                  <dt>{s.centralAngle}</dt>
+                  <dd>{degrees(360 / n)}</dd>
+                </div>
+                <div>
+                  <dt>{s.diagonals}</dt>
+                  <dd>{(n * (n - 3)) / 2}</dd>
+                </div>
+              </>
+            )}
             <div>
               <dt>{s.price}</dt>
               <dd className="money">{s.money(tile.price!)}</dd>
@@ -636,7 +997,7 @@ function TileInfo({
           aria-label={s.previousTile}
           onClick={() => setIndex((index - 1 + TILES.length) % TILES.length)}
         >
-          ‹
+          <ChevronLeft size={20} aria-hidden="true" />
         </button>
         <span>{s.tileNumber(index, TILES.length)}</span>
         <button className="action secondary" onClick={browse}>
@@ -647,7 +1008,7 @@ function TileInfo({
           aria-label={s.nextTile}
           onClick={() => setIndex((index + 1) % TILES.length)}
         >
-          ›
+          <ChevronRight size={20} aria-hidden="true" />
         </button>
       </div>
     </InfoDialog>
@@ -656,7 +1017,10 @@ function TileInfo({
 
 const propertyGroups = Array.from({ length: 10 }, (_, index) => {
   const n = index + 3;
-  return { n, indices: TILES.flatMap((tile, tileIndex) => (tile.n === n ? [tileIndex] : [])) };
+  return {
+    n,
+    indices: TILES.flatMap((tile, tileIndex) => (tile.n === n ? [tileIndex] : [])),
+  };
 });
 
 function TilesSheet({
@@ -668,11 +1032,15 @@ function TilesSheet({
   select: (index: number) => void;
   close: () => void;
 }) {
+  const s = useStrings();
   return (
     <InfoDialog title={s.tileList} close={close}>
-      {propertyGroups.map(({ n, indices }) => (
+      {(state.settings.topic === 'polygons'
+        ? propertyGroups
+        : [{ n: 0, indices: propertyGroups.flatMap(({ indices }) => indices) }]
+      ).map(({ n, indices }) => (
         <section className="tile-group" key={n}>
-          <h3>{s.property(n)}</h3>
+          {n > 0 && <h3>{propertyName(s, 'polygons', n, indices[0])}</h3>}
           {indices.map((index) => {
             const tile = TILES[index];
             const owner = state.players.find((player) => player.id === state.owners[index]);
@@ -683,9 +1051,16 @@ function TilesSheet({
                 key={index}
                 onClick={() => select(index)}
               >
-                <Polygon n={n} ownerColor={owner?.color} label />
+                <TopicArt
+                  topic={state.settings.topic}
+                  sides={tile.n}
+                  index={index}
+                  ownerColor={owner?.color}
+                  label
+                />
                 <span className="property-row-title">
-                  {s.property(n)} <small>#{index + 1}</small>
+                  {propertyName(s, state.settings.topic, tile.n!, index)}{' '}
+                  <small>#{index + 1}</small>
                 </span>
                 <span className="row-prices money">
                   {s.price} {s.money(tile.price!)} · {s.rent} {s.money(tile.rent!)}
@@ -702,33 +1077,37 @@ function TilesSheet({
 
 function CurrentTile({
   state,
-  diceSum,
+  dice,
   you,
 }: {
   state: PublicState;
-  diceSum?: number;
+  dice?: [number, number];
   you?: string;
 }) {
+  const s = useStrings();
   const index = state.players[state.turn].pos;
-  const latest = state.events.at(-1);
   const tile = TILES[index];
   const owner = state.players.find((player) => player.id === state.owners[index]);
+  const latest = state.events.at(-1);
 
   return (
-    <>
-      <div className="landing-card">
+    <div className="table-center">
+      <div className="landing-card" key={index}>
         {tile.kind === 'property' ? (
           <>
-            <Polygon n={tile.n!} ownerColor={owner?.color} label />
+            <TopicArt
+              topic={state.settings.topic}
+              sides={tile.n}
+              index={index}
+              ownerColor={owner?.color}
+            />
             <div>
-              <h2>{s.property(tile.n!)}</h2>
-              <p className="landing-prices money">
-                {s.price} <strong>{s.money(tile.price!)}</strong>
-                <span> · </span>
-                {s.rent} <strong>{s.money(tile.rent!)}</strong>
+              <h2>{propertyName(s, state.settings.topic, tile.n!, index)}</h2>
+              <p className="money">
+                {s.price} {s.money(tile.price!)} · {s.rent} {s.money(tile.rent!)}
               </p>
               <p className="landing-owner">
-                {s.owner} <Owner player={owner} />
+                <Owner player={owner} />
               </p>
             </div>
           </>
@@ -742,15 +1121,14 @@ function CurrentTile({
           </>
         )}
       </div>
-      <p className="latest-log" aria-live="polite">
-        {latest && describeEvent(latest, state, you).text}
-      </p>
-      {diceSum !== undefined && <p className="roll-total">{s.diceSum(diceSum)}</p>}
-    </>
+      {dice && <p className="roll-total">{s.diceSum(dice[0] + dice[1])}</p>}
+      {latest && <p className="latest-log">{describeEvent(s, latest, state, you).text}</p>}
+    </div>
   );
 }
 
 function RoomCode({ code }: { code: string }) {
+  const s = useStrings();
   const [feedback, setFeedback] = useState('');
   const reset = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => clearTimeout(reset.current), []);
@@ -804,6 +1182,7 @@ function useGameMotion({ state, connection }: Snapshot) {
   const queues = useRef<Record<string, { pos: number; landing?: number }[]>>({});
   const [dice, setDice] = useState(state.dice);
   const [tumbling, setTumbling] = useState(false);
+  const [moving, setMoving] = useState(false);
   const [cashChanges, setCashChanges] = useState<Record<string, { delta: number; id: number }>>({});
   const animationId = useRef(0);
   const [landings, setLandings] = useState<Record<number, number>>({});
@@ -825,6 +1204,7 @@ function useGameMotion({ state, connection }: Snapshot) {
       }
       if (Object.keys(landed).length) setLandings((shown) => ({ ...shown, ...landed }));
       if (Object.keys(steps).length) setPositions((shown) => ({ ...shown, ...steps }));
+      else setMoving(false);
     }, 150);
     return () => {
       clearInterval(movementTimer);
@@ -838,6 +1218,7 @@ function useGameMotion({ state, connection }: Snapshot) {
     previous.current = { state, connection };
     if (before.connection !== connection) {
       queues.current = {};
+      setMoving(false);
       clearInterval(diceTimer.current);
       clearTimeout(diceEnd.current);
       setPositions(Object.fromEntries(state.players.map(({ id, pos }) => [id, pos])));
@@ -859,6 +1240,7 @@ function useGameMotion({ state, connection }: Snapshot) {
       if (event.kind === 'buy') purchased[event.tile] = event.id;
       if (event.kind !== 'roll') continue;
       const from = cursors[event.player];
+      if (from === undefined) continue;
       const distance = event.dice[0] + event.dice[1];
       const landing = (from + distance) % TILES.length;
       cursors[event.player] = landing;
@@ -881,7 +1263,10 @@ function useGameMotion({ state, connection }: Snapshot) {
         snapped[player.id] = player.pos;
       }
       if (old && player.cash !== old.cash) {
-        changes[player.id] = { delta: player.cash - old.cash, id: ++animationId.current };
+        changes[player.id] = {
+          delta: player.cash - old.cash,
+          id: ++animationId.current,
+        };
       }
     }
     if (Object.keys(snapped).length) setPositions((shown) => ({ ...shown, ...snapped }));
@@ -889,6 +1274,7 @@ function useGameMotion({ state, connection }: Snapshot) {
     if (Object.keys(changes).length) setCashChanges((shown) => ({ ...shown, ...changes }));
 
     if (rolled && state.dice) {
+      if (Object.keys(queues.current).length) setMoving(true);
       clearInterval(diceTimer.current);
       clearTimeout(diceEnd.current);
       if (reduceMotion) {
@@ -909,15 +1295,25 @@ function useGameMotion({ state, connection }: Snapshot) {
     }
   }, [state, connection]);
 
-  return { positions, dice, tumbling, cashChanges, landings, stamps };
+  return { positions, dice, tumbling, moving, cashChanges, landings, stamps };
 }
 
-function describeEvent(event: GameEvent, state: PublicState, you?: string) {
+function describeEvent(s: Strings, event: GameEvent, state: PublicState, you?: string) {
   const player =
     'player' in event ? state.players.find(({ id }) => id === event.player) : undefined;
   const mine = player?.id === you && Boolean(player);
-  const p = mine ? s.you : (player?.name ?? '');
-  const n = 'tile' in event ? TILES[event.tile].n! : 0;
+  const playerName = (id: string) =>
+    state.players.find((candidate) => candidate.id === id)?.name ??
+    state.events.find(
+      (item): item is Extract<GameEvent, { kind: 'removed' }> =>
+        item.kind === 'removed' && item.player === id,
+    )?.name ??
+    s.player;
+  const p = mine ? s.you : 'player' in event ? playerName(event.player) : '';
+  const property =
+    'tile' in event
+      ? propertyName(s, state.settings.topic, TILES[event.tile].n ?? 0, event.tile)
+      : '';
   const amount = 'amount' in event ? s.money(Math.abs(event.amount)) : '';
   const eventText = s.events;
   let text: string;
@@ -932,9 +1328,18 @@ function describeEvent(event: GameEvent, state: PublicState, you?: string) {
     case 'back':
       text = eventText.back(p, mine);
       break;
+    case 'removed':
+      text = eventText.removed(event.name, event.reason === 'voluntary');
+      break;
+    case 'turnSkipped':
+      text = eventText.turnSkipped(p, mine);
+      break;
     case 'started':
       text = eventText.started;
       tone = 'good';
+      break;
+    case 'rematch':
+      text = eventText.rematch;
       break;
     case 'over':
       text = eventText.over;
@@ -953,7 +1358,13 @@ function describeEvent(event: GameEvent, state: PublicState, you?: string) {
       text = eventText.question(
         p,
         mine,
-        event.q === 'chance' ? 'chance' : event.mystery ? 'mystery' : n,
+        event.q === 'chance'
+          ? s.tileNames.chance
+          : state.settings.topic === 'polygons'
+            ? event.mystery
+              ? s.polygonTopic
+              : property
+            : s.topics[state.settings.topic],
       );
       break;
     case 'answer':
@@ -965,19 +1376,18 @@ function describeEvent(event: GameEvent, state: PublicState, you?: string) {
       tone = event.correct ? 'good' : 'bad';
       break;
     case 'buy':
-      text = eventText.buy(p, n, amount);
+      text = eventText.buy(p, property, amount);
       tone = 'good';
       break;
     case 'skip':
-      text = eventText.skip(p, n);
+      text = eventText.skip(p, property);
       break;
     case 'cantAfford':
-      text = eventText.cantAfford(p, n);
+      text = eventText.cantAfford(p, property);
       tone = 'bad';
       break;
     case 'rent': {
-      const payee =
-        event.to === you ? s.you : (state.players.find(({ id }) => id === event.to)?.name ?? '');
+      const payee = event.to === you ? s.you : playerName(event.to);
       text = eventText.rent(p, amount, payee, event.half);
       tone = event.to === you ? 'good' : 'bad';
       break;
@@ -1006,7 +1416,8 @@ function EventMessage({
   state: PublicState;
   you?: string;
 }) {
-  const { text, tone, player } = describeEvent(event, state, you);
+  const s = useStrings();
+  const { text, tone, player } = describeEvent(s, event, state, you);
   return (
     <li className={`event-message event-${tone}`}>
       {player && <PlayerToken player={player} size={16} />}
@@ -1015,22 +1426,32 @@ function EventMessage({
   );
 }
 
+function ToastStack({ toasts, state, you }: { toasts: Toast[]; state: PublicState; you?: string }) {
+  return (
+    <ul className="toast-stack" aria-live="polite" aria-relevant="additions">
+      {toasts.map(({ event }) => (
+        <EventMessage key={event.id} event={event} state={state} you={you} />
+      ))}
+    </ul>
+  );
+}
+
 function questionStakes(
+  s: Strings,
   question: PublicQuestion,
   state: PublicState,
-  you?: string,
+  mine: boolean,
 ): [string, string] {
-  const active = state.players[state.turn];
-  const name = active.id === you ? undefined : active.name;
   const tile = TILES[question.tile];
+  const player = mine ? undefined : state.players[state.turn].name;
   switch (question.kind) {
     case 'buy':
-      return [s.stakes.buyRight(s.money(tile.price!), name), s.stakes.buyWrong];
+      return [s.stakes.buyRight(s.money(tile.price!), player), s.stakes.buyWrong(player)];
     case 'rent': {
-      const owner = state.players.find(({ id }) => id === state.owners[question.tile])!;
+      const owner = state.players.find(({ id }) => id === state.owners[question.tile]);
       return [
-        s.stakes.rentRight(s.money(tile.rent! / 2), name),
-        s.stakes.rentWrong(s.money(tile.rent!), owner.name, name),
+        s.stakes.rentRight(s.money(tile.rent! / 2), player),
+        s.stakes.rentWrong(s.money(tile.rent!), owner?.name, player),
       ];
     }
     case 'chance':
@@ -1040,69 +1461,107 @@ function questionStakes(
 
 function Stakes({ lines }: { lines: [string, string] }) {
   return (
-    <span className="stakes">
-      <span className="right-stake">✓ {lines[0]}</span>{' '}
-      <span className="wrong-stake">✗ {lines[1]}</span>
-    </span>
+    <p className="stakes">
+      <span className="right-stake">
+        <Check className="inline-icon" aria-hidden="true" /> {lines[0]}
+      </span>
+      <span className="wrong-stake">
+        <X className="inline-icon" aria-hidden="true" /> {lines[1]}
+      </span>
+    </p>
   );
 }
 
 function QuestionSheet({
   question,
+  topic,
   player,
   mine,
   actionable,
   failed,
   stakes,
-  progress,
-  send,
+  timeLeft,
+  urgent,
+  submitAnswer,
+  rollControls,
 }: {
   question: PublicQuestion;
+  topic: Topic;
   player: Player;
   mine: boolean;
   actionable: boolean;
   failed: boolean;
   stakes: [string, string];
-  progress: ReactNode;
-  send: (message: ClientMsg) => boolean;
+  timeLeft: number;
+  urgent: boolean;
+  submitAnswer: (index: number) => boolean;
+  rollControls: ReactNode;
 }) {
+  const s = useStrings();
+  const { language } = useLanguage();
+  const copy = language === 'en' ? question.english : question;
   const [selection, select] = useState<number>();
   const [sent, markSent] = useState(false);
   useEffect(() => {
     if (failed) markSent(false);
   }, [failed]);
-  const disabled = !actionable || (sent && !failed);
+  const disabled = !actionable || sent;
+  const chess = question.chess;
+
   return (
     <section
-      className={`game-sheet question-sheet ${mine ? 'my-question' : 'watch-question'}`}
+      className={`game-sheet question-card question-sheet ${mine ? 'my-question' : 'watch-question'}${chess ? ' chess-question' : ''}`}
+      data-chess-step={chess?.step}
       aria-labelledby="question-title"
     >
-      <p className="question-ribbon" style={mine ? { backgroundColor: player.color } : undefined}>
-        {mine ? s.yourQuestion : s.theirQuestion(player.name)}
-      </p>
-      <div className="question-content">
-        <div
-          className={`question-prompt${question.n === undefined ? ' mystery-prompt' : ''}`}
-          lang="es"
-        >
-          {question.n !== undefined && (
-            <div className="question-diagram">
-              <Polygon n={question.n} mark={question.mark} />
-            </div>
-          )}
-          <h2 id="question-title">{question.text}</h2>
+      <header className="question-ribbon">
+        <div>
+          <strong>{mine ? s.yourQuestion : s.theirQuestion(player.name)}</strong>
+          {chess && <h2 id="question-title">{copy.text}</h2>}
         </div>
-        <p className="question-hint" lang="es">
-          <span aria-hidden="true">💡 </span>
-          {question.hint}
-        </p>
-        {mine ? (
-          <>
-            <p>
-              <Stakes lines={stakes} />
-            </p>
-            <div className="answer-grid" lang="es">
-              {question.options.map((option, index) => (
+        {chess && (
+          <div className="chess-turn">
+            <span>{s.chessPuzzle.toMove[chess.turn]}</span>
+            {chess.step && <strong>{s.chessPuzzle.step(chess.step)}</strong>}
+            {(mine || chess.lastReply) && (
+              <span aria-live="polite">
+                {selection !== undefined
+                  ? chessMoveLabel(s, copy.options[selection])
+                  : chess.lastReply
+                    ? s.chessPuzzle.reply(chessMoveLabel(s, chess.lastReply))
+                    : ''}
+              </span>
+            )}
+          </div>
+        )}
+      </header>
+      <div className="question-body">
+        {chess ? (
+          <ChessBoard
+            puzzle={chess}
+            moves={mine ? copy.options : undefined}
+            selected={selection}
+            select={mine && !disabled ? select : undefined}
+          />
+        ) : (
+          <div className="question-prompt with-diagram">
+            <div className={topic === 'polygons' ? 'question-diagram' : 'question-emblem'}>
+              <TopicArt topic={topic} sides={question.n} mark={question.mark} />
+            </div>
+            <h2 id="question-title">{copy.text}</h2>
+          </div>
+        )}
+        <div className={chess ? 'question-details chess-details' : 'question-details'}>
+          <p className="question-hint">
+            <Lightbulb className="inline-icon" aria-hidden="true" /> {copy.hint}
+          </p>
+          <Stakes lines={stakes} />
+          {chess && !mine && <p className="watch-note">{s.watchOnly(player.name)}</p>}
+        </div>
+        {!chess &&
+          (mine ? (
+            <div className="answer-grid">
+              {copy.options.map((option, index) => (
                 <button
                   className="action answer"
                   key={option}
@@ -1110,51 +1569,61 @@ function QuestionSheet({
                   aria-pressed={selection === index}
                   onClick={() => select(index)}
                 >
-                  {selection === index && <span aria-hidden="true">✓ </span>}
+                  {selection === index && (
+                    <>
+                      <Check className="inline-icon" aria-hidden="true" />{' '}
+                    </>
+                  )}
                   {option}
                 </button>
               ))}
             </div>
-          </>
-        ) : (
-          <>
-            <ul className="answer-grid watch-options" lang="es">
-              {question.options.map((option) => (
+          ) : (
+            <ul className="answer-grid watch-options">
+              {copy.options.map((option) => (
                 <li key={option}>{option}</li>
               ))}
             </ul>
-            <p>
-              <Stakes lines={stakes} />
-            </p>
-            <p className="watch-note">{s.watchOnly(player.name)}</p>
-          </>
+          ))}
+        {!chess && !mine && <p className="watch-note">{s.watchOnly(player.name)}</p>}
+      </div>
+      <div className="question-actions">
+        <div className="question-roll">{rollControls}</div>
+        {mine && (
+          <button
+            className="action primary lock-answer"
+            disabled={disabled || selection === undefined}
+            onClick={() => {
+              if (selection !== undefined && submitAnswer(selection)) markSent(true);
+            }}
+          >
+            {sent
+              ? s.answerSent
+              : chess && selection === undefined
+                ? s.chessPuzzle.chooseMove
+                : s.lockAnswer}
+          </button>
         )}
       </div>
-      {mine && (
-        <button
-          className="action primary lock-answer"
-          disabled={disabled || selection === undefined}
-          onClick={() => {
-            if (selection !== undefined && send({ t: 'answer', index: selection })) markSent(true);
-          }}
-        >
-          {sent && !failed ? s.answerSent : s.lockAnswer}
-        </button>
-      )}
-      {progress}
+      <div className={`question-timer${urgent ? ' urgent' : ''}`} aria-hidden="true">
+        <span style={{ transform: `scaleX(${timeLeft})` }} />
+      </div>
     </section>
   );
 }
 
-function HowTo({ close }: { close: () => void }) {
+function HowTo({ close, topic }: { close: () => void; topic: Topic }) {
+  const s = useStrings();
   const [step, setStep] = useState(0);
   const total = s.howToCards.length;
   const last = step === total - 1;
   return (
     <InfoDialog title={s.howTo} close={close}>
       <div className="tutorial-polygon">
-        <Polygon
-          n={[3, 5, 6, 8, 10][step]}
+        <TopicArt
+          topic={topic}
+          sides={[3, 5, 6, 8, 10][step]}
+          index={step}
           mark={step === 1 ? 'radius' : step === 2 ? 'apothem' : 'none'}
           label
         />
@@ -1200,23 +1669,52 @@ function Game({
   ready,
   error,
   send,
-  home,
+  openExit,
   openHowTo,
-  feedback,
+  toasts,
 }: {
   snapshot: Snapshot;
   you?: string;
   ready: boolean;
   error: string;
   send: (message: ClientMsg) => boolean;
-  home: () => void;
+  openExit: () => void;
   openHowTo: () => void;
-  feedback?: ReactNode;
+  toasts: Toast[];
 }) {
+  const s = useStrings();
   const { state, offset } = snapshot;
   const [clock, setClock] = useState(Date.now);
-  const [sheet, setSheet] = useState<'tiles' | 'formulas' | 'log' | 'leave' | number>();
-  const { positions, dice, tumbling, cashChanges, landings, stamps } = useGameMotion(snapshot);
+  const [sheet, setSheet] = useState<'tiles' | 'formulas' | 'log' | 'roster' | number>();
+  const [readAnswer, setReadAnswer] = useState(state.result?.id);
+  const [review, setReview] = useState<AnswerResult>();
+  const asking = state.phase === 'question';
+  const visibleReview = asking || sheet ? undefined : review;
+  const resultSeen = useRef({
+    connection: snapshot.connection,
+    id: state.result?.id,
+  });
+
+  useEffect(() => {
+    const previous = resultSeen.current;
+    const result = state.result;
+    resultSeen.current = { connection: snapshot.connection, id: result?.id };
+    if (!result || previous.connection !== snapshot.connection) {
+      setReview(undefined);
+      setReadAnswer(result?.id);
+      return;
+    }
+    if (asking) {
+      setReview(undefined);
+      return;
+    }
+    if (result.id === previous.id) return;
+    setReview(result);
+    const timer = setTimeout(() => setReview(undefined), 6000);
+    return () => clearTimeout(timer);
+  }, [asking, snapshot.connection, state.result?.id]);
+  const { positions, dice, tumbling, moving, cashChanges, landings, stamps } =
+    useGameMotion(snapshot);
   const currentChip = useRef<HTMLLIElement>(null);
   useEffect(() => {
     const timer = setInterval(() => setClock(Date.now()), 100);
@@ -1237,236 +1735,324 @@ function Game({
   const phaseSeconds = Math.max(0, Math.ceil((state.deadline! - now) / 1000));
   const player = state.players[state.turn];
   const myTurn = player.id === you;
+  const presenter = state.mode === 'projector' && state.hostId === you;
+  const topic = state.settings.topic;
+  const propertyLabel = propertyName(s, topic, TILES[player.pos].n ?? 0, player.pos);
   const actionable = myTurn && ready && phaseSeconds > 0 && gameSeconds > 0;
   const question = state.question;
+  const playingRoll = tumbling || moving;
+  const showQuestion = playingRoll ? undefined : question;
   const property = TILES[player.pos];
   const rollPhase = state.phase === 'roll';
   const clockLabel = `${Math.floor(gameSeconds / 60)}:${String(gameSeconds % 60).padStart(2, '0')}`;
   const fraction = (duration: number) =>
     Math.max(0, Math.min(1, (state.deadline! - now) / (duration * 1000)));
-  const urgent = phaseSeconds <= 5;
-  const progress = (duration: number) => (
-    <span className={`countdown${urgent ? ' urgent' : ''}`} aria-hidden="true">
-      <span style={{ transform: `scaleX(${fraction(duration)})` }} />
-    </span>
-  );
   const close = () => setSheet(undefined);
-  const stakes = question ? questionStakes(question, state, you) : undefined;
   const buyPhase = state.phase === 'buy';
-  const deadlineDuration = rollPhase ? ROLL_SECONDS : question ? QUESTION_SECONDS : BUY_SECONDS;
-  const headline = rollPhase
+  const deadlineDuration = rollPhase
+    ? state.settings.rollSeconds
+    : question
+      ? state.settings.questionSeconds
+      : state.settings.buySeconds;
+  const headline = question
     ? myTurn
-      ? s.banner.roll
-      : s.banner.otherRoll(player.name)
+      ? s.banner.question
+      : s.banner.otherQuestion(player.name)
+    : buyPhase
+      ? myTurn
+        ? s.banner.buy
+        : s.banner.otherBuy(player.name)
+      : myTurn
+        ? s.banner.roll
+        : s.banner.otherRoll(player.name);
+  const stakes = question ? questionStakes(s, question, state, myTurn) : undefined;
+  const hint = playingRoll
+    ? s.banner.landing
     : question
       ? myTurn
-        ? s.banner.question
-        : s.banner.otherQuestion(player.name)
-      : myTurn
-        ? s.banner.buy
-        : s.banner.otherBuy(player.name);
-  const hint = rollPhase ? (
-    myTurn ? (
-      s.banner.rollHint
-    ) : (
-      s.banner.otherRollHint
-    )
-  ) : question ? (
-    myTurn ? (
-      <Stakes lines={stakes!} />
-    ) : (
-      s.banner.otherQuestionHint(player.name, question.n)
-    )
-  ) : myTurn ? (
-    s.banner.buyHint
-  ) : (
-    s.banner.otherBuyHint
+        ? stakes?.[0]
+        : s.banner.watchQuestion
+      : buyPhase
+        ? myTurn
+          ? s.banner.buyHint
+          : s.banner.wait
+        : myTurn
+          ? s.banner.rollHint
+          : s.banner.wait;
+  const result = state.result;
+  const myColor = state.players.find(({ id }) => id === you)?.color;
+  const unreadAnswer = result && sheet !== 'log' && result.id !== readAnswer;
+  const answerer = (answer: AnswerResult) =>
+    answer.playerId === you
+      ? s.you
+      : (state.players.find(({ id }) => id === answer.playerId)?.name ?? s.previousPlayer);
+  const rollControls = (
+    <div className="action-row">
+      <div
+        className={`dice${tumbling ? ' tumbling' : ''}`}
+        role="img"
+        aria-label={tumbling ? s.rolling : dice ? s.dice(...dice) : s.noDice}
+      >
+        <span>{dice?.[0] ?? <Minus size={16} aria-hidden="true" />}</span>
+        <span>{dice?.[1] ?? <Minus size={16} aria-hidden="true" />}</span>
+      </div>
+      {myTurn || question || playingRoll ? (
+        <button
+          className="action primary roll-button"
+          disabled={!rollPhase || !actionable || playingRoll}
+          onClick={() => send({ t: 'roll', version: state.version })}
+        >
+          {s.roll}
+        </button>
+      ) : (
+        <p className="waiting-action">{s.waitingFor(player.name)}</p>
+      )}
+    </div>
   );
 
   return (
     <main
-      className={`game ${question ? (myTurn ? 'live-question' : 'spectator-question') : buyPhase ? 'buy-phase' : ''}`}
+      className={`game ${showQuestion ? (myTurn ? 'answering-turn' : 'watching-turn') : buyPhase ? 'buying-turn' : 'rolling-turn'}`}
+      style={{ '--turn-color': player.color } as CSSProperties}
     >
-      <header className="game-header">
-        <h1>{s.title}</h1>
-        {state.players.some((player) => player.bot) ? (
-          <button className="action secondary" onClick={() => setSheet('leave')}>
-            {s.leavePractice}
+      <div className="game-content">
+        <header className="game-header">
+          <h1>
+            {s.title} <span>{s.topics[topic]}</span>
+          </h1>
+          {presenter && <FullscreenButton />}
+          {state.mode !== 'practice' && <RoomCode code={state.code} />}
+          <button className="action secondary game-exit" onClick={openExit}>
+            {presenter ? s.endSession : s.leaveGame}
           </button>
-        ) : (
-          state.code && <RoomCode code={state.code} />
-        )}
-        <span
-          className={`game-clock${gameSeconds <= 60 ? ' final-minute' : ''}`}
-          aria-label={`${s.clock} ${clockLabel}`}
-        >
-          {clockLabel}
-        </span>
-      </header>
-      <section
-        className={`turn-banner${myTurn ? ' my-turn' : ''}`}
-        style={{ '--turn-color': player.color } as CSSProperties}
-      >
-        <PlayerToken player={player} size={30} />
-        <div className="turn-copy">
-          <h2 aria-live="polite">{headline}</h2>
-          <p className="turn-hint">{hint}</p>
-        </div>
-        <div className="turn-ring" role="img" aria-label={s.turnTime(phaseSeconds)}>
-          <svg viewBox="0 0 44 44" aria-hidden="true">
-            <circle cx="22" cy="22" r="19" />
-            <circle
-              className="remaining"
-              cx="22"
-              cy="22"
-              r="19"
-              pathLength="100"
-              strokeDasharray={`${fraction(deadlineDuration) * 100} 100`}
-            />
-          </svg>
-          <span>{phaseSeconds}</span>
-        </div>
-      </section>
-      <Board state={state} positions={positions} landings={landings} stamps={stamps}>
-        <CurrentTile
-          state={state}
-          you={you}
-          diceSum={dice && !tumbling ? dice[0] + dice[1] : undefined}
-        />
-      </Board>
-      <section className="dock">
-        <ul className="player-chips" aria-label={s.scoreboard}>
-          {state.players.map((candidate) => {
-            const change = cashChanges[candidate.id];
-            const worth = s.money(netWorth(candidate, state.owners));
-            return (
-              <li
-                className={`player-chip${candidate.id === player.id ? ' current-chip' : ''}${candidate.connected ? '' : ' offline-chip'}`}
-                key={candidate.id}
-                ref={candidate.id === player.id ? currentChip : undefined}
-                style={{ borderColor: candidate.id === player.id ? candidate.color : undefined }}
-                aria-current={candidate.id === player.id ? 'true' : undefined}
-              >
-                <span className="chip-name">
-                  <PlayerToken player={candidate} size={14} />
-                  {candidate.id === player.id && (
-                    <span className="turn-marker" aria-hidden="true">
-                      ▶
-                    </span>
-                  )}
-                  <span>{candidate.name}</span>
-                  {!candidate.connected && <span className="sr-only"> {s.offline}</span>}
-                </span>
-                <strong className="money">
-                  <span className="sr-only">{s.netWorth} </span>
-                  {worth}
-                </strong>
-                <span className={`chip-cash money${change ? ' cash-flash' : ''}`} key={change?.id}>
-                  {s.cashValue(s.money(candidate.cash))}
-                  {change && (
-                    <span
-                      className={`cash-float ${change.delta > 0 ? 'gain' : 'loss'}`}
-                      aria-hidden="true"
-                    >
-                      {s.cashChange(change.delta)}
-                    </span>
-                  )}
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-        {buyPhase ? (
-          <section className="buy-offer" aria-labelledby="buy-offer-title">
-            <h3 id="buy-offer-title" className="money">
-              {myTurn
-                ? s.buyOffer(property.n!, s.money(property.price!))
-                : s.otherBuyOffer(player.name, property.n!, s.money(property.price!))}
-            </h3>
-            {myTurn && (
-              <p className="money">
-                {s.buyRent(s.money(property.rent!), s.money(property.rent! / 2))}
-              </p>
-            )}
-            <div className="buy-actions">
-              {myTurn ? (
-                <>
-                  <button
-                    className="action primary money"
-                    disabled={!actionable}
-                    onClick={() => send({ t: 'buy' })}
-                  >
-                    {s.buy(property.price!)}
-                  </button>
-                  <button
-                    className="action secondary"
-                    disabled={!actionable}
-                    onClick={() => send({ t: 'skip' })}
-                  >
-                    {s.skip}
-                  </button>
-                </>
-              ) : (
-                <p className="buy-wait">{s.deciding(player.name)}</p>
-              )}
+          <span
+            className={`game-clock${gameSeconds <= 60 ? ' final-minute' : ''}`}
+            aria-label={`${s.clock} ${clockLabel}`}
+          >
+            {clockLabel}
+          </span>
+          <LanguagePicker />
+        </header>
+        <Board state={state} positions={positions} landings={landings} stamps={stamps}>
+          <CurrentTile state={state} dice={tumbling ? undefined : dice} you={you} />
+        </Board>
+        <div className="game-sidebar">
+          <section className={`turn-banner${myTurn ? ' my-turn' : ''}`}>
+            <PlayerToken player={player} size={34} />
+            <div className="turn-copy" aria-live="polite">
+              <h2 key={headline}>{headline}</h2>
+              <p className="turn-hint">{hint}</p>
+            </div>
+            <div
+              className={`turn-ring${phaseSeconds <= 5 ? ' urgent' : ''}`}
+              role="img"
+              aria-label={s.turnTime(phaseSeconds)}
+            >
+              <svg viewBox="0 0 44 44" aria-hidden="true">
+                <circle cx="22" cy="22" r="19" />
+                <circle
+                  className="remaining"
+                  cx="22"
+                  cy="22"
+                  r="19"
+                  pathLength="100"
+                  strokeDasharray={`${fraction(deadlineDuration) * 100} 100`}
+                />
+              </svg>
+              <span>{phaseSeconds}</span>
             </div>
           </section>
-        ) : (
-          !(question && myTurn) && (
-            <div className="action-row">
-              {rollPhase && (
-                <div
-                  className={`dice${tumbling ? ' tumbling' : ''}`}
-                  role="img"
-                  aria-label={tumbling ? s.rolling : dice ? s.dice(...dice) : s.noDice}
-                >
-                  <span>{dice?.[0] ?? '–'}</span>
-                  <span>{dice?.[1] ?? '–'}</span>
-                </div>
-              )}
+          <div className="phase-panel">
+            {showQuestion && stakes && (
+              <QuestionSheet
+                key={`${snapshot.connection}-${state.version}`}
+                question={showQuestion}
+                topic={topic}
+                player={player}
+                mine={myTurn}
+                stakes={stakes}
+                timeLeft={fraction(deadlineDuration)}
+                urgent={phaseSeconds <= 5}
+                actionable={actionable}
+                failed={!ready || Boolean(error)}
+                submitAnswer={(index) => send({ t: 'answer', index, version: state.version })}
+                rollControls={rollControls}
+              />
+            )}
+            {buyPhase && (
+              <section className="buy-offer" aria-labelledby="buy-offer-title">
+                <h3 id="buy-offer-title">
+                  {myTurn
+                    ? s.buyOffer(propertyLabel, s.money(property.price!), topic === 'polygons')
+                    : s.otherBuyOffer(player.name, propertyLabel, s.money(property.price!))}
+                </h3>
+                {myTurn && (
+                  <>
+                    <p className="money">
+                      {s.buyRent(s.money(property.rent!), s.money(property.rent! / 2))}
+                    </p>
+                    <div className="buy-actions">
+                      <button
+                        className="action primary money"
+                        disabled={!actionable}
+                        onClick={() => send({ t: 'buy', version: state.version })}
+                      >
+                        {s.buy(property.price!)}
+                      </button>
+                      <button
+                        className="action secondary"
+                        disabled={!actionable}
+                        onClick={() => send({ t: 'skip', version: state.version })}
+                      >
+                        {s.skip}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </section>
+            )}
+            {visibleReview && (
+              <div className="desktop-review">
+                <AnswerReview
+                  result={visibleReview}
+                  topic={topic}
+                  name={answerer(visibleReview)}
+                  mine={visibleReview.playerId === you}
+                  color={myColor}
+                  placement="panel"
+                  dismiss={() => {
+                    setReadAnswer(visibleReview.id);
+                    setReview(undefined);
+                  }}
+                />
+              </div>
+            )}
+          </div>
+          {presenter && (
+            <div className="host-controls" aria-label={s.hostControls}>
+              <button className="action secondary" onClick={() => setSheet('roster')}>
+                {s.managePlayers}
+              </button>
               <button
-                className={`action primary roll-button${rollPhase ? '' : ' waiting-action'}`}
-                disabled={!rollPhase || !actionable}
-                onClick={() => send({ t: 'roll' })}
+                className="action secondary"
+                disabled={!ready || phaseSeconds <= 0 || gameSeconds <= 0}
+                onClick={() => send({ t: 'skipTurn', version: state.version })}
               >
-                {rollPhase
-                  ? myTurn
-                    ? s.roll
-                    : s.waitingFor(player.name)
-                  : s.answering(player.name)}
+                {s.skipTurn}
+              </button>
+              <button
+                className="action secondary"
+                disabled={!ready || phaseSeconds <= 0 || gameSeconds <= 0}
+                title={rollPhase ? s.timeout.roll : question ? s.timeout.question : s.timeout.buy}
+                onClick={() => send({ t: 'applyTimeout', version: state.version })}
+              >
+                {s.applyTimeout}
               </button>
             </div>
-          )
-        )}
-        <nav className="dock-tools">
-          <button className="action secondary" onClick={() => setSheet('tiles')}>
-            {s.tileList}
-          </button>
+          )}
+          <section className="dock">
+            <ul className="player-chips" aria-label={s.scoreboard}>
+              {state.players.map((candidate) => {
+                const change = cashChanges[candidate.id];
+                const worth = netWorth(candidate, state.owners);
+                return (
+                  <li
+                    className={`player-chip${candidate.id === player.id ? ' current-chip' : ''}${candidate.connected ? '' : ' offline-chip'}`}
+                    key={candidate.id}
+                    ref={candidate.id === player.id ? currentChip : undefined}
+                    style={{
+                      borderColor: candidate.id === player.id ? candidate.color : undefined,
+                    }}
+                    aria-current={candidate.id === player.id ? 'true' : undefined}
+                  >
+                    <span className="chip-name">
+                      <PlayerToken player={candidate} size={20} />
+                      {candidate.id === player.id && (
+                        <Play
+                          className="turn-marker"
+                          size={12}
+                          fill="currentColor"
+                          aria-hidden="true"
+                        />
+                      )}
+                      <span>{candidate.name}</span>
+                      {!candidate.connected && <span className="sr-only"> {s.offline}</span>}
+                    </span>
+                    <div className="chip-money">
+                      <strong className="money">
+                        <span className="chip-worth-label">{s.netWorth}</span> {s.money(worth)}
+                      </strong>
+                      <span
+                        className={`chip-cash money${change ? ' cash-flash' : ''}`}
+                        key={change ? `cash-${change.id}` : 'cash'}
+                      >
+                        {s.cashValue(s.money(candidate.cash))}
+                      </span>
+                      {change && (
+                        <span
+                          key={change.id}
+                          className={`cash-float ${change.delta > 0 ? 'gain' : 'loss'}`}
+                          aria-hidden="true"
+                        >
+                          {s.cashChange(change.delta)}
+                        </span>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+            {buyPhase ? <div className="action-row inactive-action" /> : rollControls}
+          </section>
+        </div>
+      </div>
+      <nav className="dock-tools" aria-label={s.gameTools}>
+        <button className="action secondary" onClick={() => setSheet('tiles')}>
+          {s.tileList}
+        </button>
+        {topic === 'polygons' && (
           <button className="action secondary" onClick={() => setSheet('formulas')}>
             {s.formulas}
           </button>
-          <button className="action secondary" onClick={() => setSheet('log')}>
-            {s.eventLog}
-          </button>
-          <button className="action secondary" aria-label={s.howTo} onClick={openHowTo}>
-            ?
-          </button>
-        </nav>
-      </section>
-      {question && stakes && (
-        <QuestionSheet
-          key={`${snapshot.connection}-${state.deadline}-${state.turn}-${state.result?.id}`}
-          question={question}
-          player={player}
-          mine={myTurn}
-          actionable={actionable}
-          failed={!ready || Boolean(error)}
-          stakes={stakes}
-          progress={progress(QUESTION_SECONDS)}
-          send={send}
-        />
+        )}
+        <button
+          className="action secondary log-tool"
+          onClick={() => {
+            setReadAnswer(result?.id);
+            setReview(undefined);
+            setSheet('log');
+          }}
+        >
+          {s.eventLog}
+          {unreadAnswer && <span key={result.id} className="log-indicator" aria-hidden="true" />}
+        </button>
+        <button className="action secondary" aria-label={s.howTo} onClick={openHowTo}>
+          <CircleQuestionMark size={18} aria-hidden="true" />
+        </button>
+      </nav>
+      {(toasts.length > 0 || visibleReview) && (
+        <div className="game-feedback">
+          <ToastStack toasts={toasts} state={state} you={you} />
+          {visibleReview && (
+            <div className="solution-space">
+              <AnswerReview
+                result={visibleReview}
+                topic={topic}
+                name={answerer(visibleReview)}
+                mine={visibleReview.playerId === you}
+                color={myColor}
+                dismiss={() => {
+                  setReadAnswer(visibleReview.id);
+                  setReview(undefined);
+                }}
+              />
+            </div>
+          )}
+        </div>
       )}
-      {feedback}
+      {sheet === 'roster' && presenter && (
+        <HostRoster state={state} ready={ready} send={send} close={close} />
+      )}
       {sheet === 'formulas' && (
         <InfoDialog title={s.formulas} close={close}>
           <p>{s.formulaNotes}</p>
@@ -1483,6 +2069,18 @@ function Game({
       {sheet === 'tiles' && <TilesSheet state={state} select={setSheet} close={close} />}
       {sheet === 'log' && (
         <InfoDialog title={s.eventLog} close={close}>
+          {result && (
+            <details className="log-answer">
+              <summary>{s.reviewAnswer}</summary>
+              <AnswerReview
+                result={result}
+                topic={topic}
+                mine={result.playerId === you}
+                color={myColor}
+                name={answerer(result)}
+              />
+            </details>
+          )}
           {state.events.length ? (
             <ol className="event-list" reversed>
               {state.events
@@ -1495,18 +2093,6 @@ function Game({
           ) : (
             <p>{s.emptyLog}</p>
           )}
-        </InfoDialog>
-      )}
-      {sheet === 'leave' && (
-        <InfoDialog title={s.leavePracticeTitle} close={close}>
-          <div className="leave-practice-actions">
-            <button className="action primary" onClick={close}>
-              {s.keepPlaying}
-            </button>
-            <button className="action secondary" onClick={home}>
-              {s.leave}
-            </button>
-          </div>
         </InfoDialog>
       )}
       {typeof sheet === 'number' && (
@@ -1522,84 +2108,322 @@ function Game({
   );
 }
 
-function ResultOverlay({
+function answerOutcome(s: Strings, result: AnswerResult, name: string) {
+  if (result.outcome === 'timeout') return s.resultTimeout(name);
+  return result.outcome === 'correct' ? s.resultCorrect(name) : s.resultIncorrect(name);
+}
+
+function SolutionDetails({
+  solution,
+  topic,
+  attempt,
+  attemptLabel,
+}: {
+  solution: QuestionSolution;
+  topic: Topic;
+  attempt?: AnswerResult;
+  attemptLabel?: string;
+}) {
+  const s = useStrings();
+  const { language } = useLanguage();
+  const copy = language === 'en' ? solution.english : solution;
+  const line = solution.chessLine;
+  const wrongAnswer = attempt && attempt.chosen !== solution.correct ? attempt.chosen : -1;
+  const displayedOptions =
+    solution.chess || !attempt
+      ? [solution.correct, ...(wrongAnswer >= 0 ? [wrongAnswer] : [])]
+      : copy.options.map((_, index) => index);
+  const move = (value: string) => chessMoveLabel(s, value);
+  const attemptedMoves =
+    line && attempt && attempt.outcome !== 'correct' && attempt.chosen >= 0
+      ? attempt.chosen === solution.correct
+        ? [line[0], line[1], ...(attempt.chessFollowup ? [attempt.chessFollowup] : [])]
+        : [copy.options[attempt.chosen]]
+      : [];
+
+  return (
+    <>
+      <ul className="answer-grid result-options">
+        {line ? (
+          <>
+            <li className="correct">
+              <span className="answer-result-label">
+                <Check className="inline-icon" aria-hidden="true" /> {s.matchReview.line}
+              </span>
+              <strong>{line.map(move).join(' · ')}</strong>
+            </li>
+            {attemptedMoves.length > 0 && (
+              <li className="wrong">
+                <span className="answer-result-label">
+                  <X className="inline-icon" aria-hidden="true" /> {attemptLabel}
+                </span>
+                <strong>{attemptedMoves.map(move).join(' · ')}</strong>
+              </li>
+            )}
+          </>
+        ) : (
+          displayedOptions.map((index) => {
+            const correct = index === solution.correct;
+            const wrong = index === wrongAnswer;
+            const Icon = correct ? Check : X;
+            return (
+              <li key={index} className={correct ? 'correct' : wrong ? 'wrong' : undefined}>
+                {(correct || wrong) && (
+                  <span className="answer-result-label">
+                    <Icon className="inline-icon" aria-hidden="true" />{' '}
+                    {correct ? s.correctAnswer : attemptLabel}
+                  </span>
+                )}
+                <strong>{solution.chess ? move(copy.options[index]) : copy.options[index]}</strong>
+              </li>
+            );
+          })
+        )}
+      </ul>
+      <div className="worked-solution">
+        <h3>{topic === 'polygons' ? s.workedSolution : s.explanation}</h3>
+        <p className="explanation">{copy.explanation}</p>
+      </div>
+    </>
+  );
+}
+
+function AnswerReview({
   result,
+  topic,
   name,
   mine,
+  color,
   dismiss,
+  placement = 'popover',
 }: {
   result: AnswerResult;
+  topic: Topic;
   name: string;
   mine: boolean;
-  dismiss: () => void;
+  color?: string;
+  dismiss?: () => void;
+  placement?: 'popover' | 'panel';
 }) {
-  const correct = result.chosen === result.correct;
-  const timedOut = result.chosen === -1;
-  const who = mine ? s.you : name;
-  const title = timedOut
-    ? s.resultTimeout(who)
-    : correct
-      ? s.resultCorrect(who)
-      : s.resultIncorrect(who);
-  const others = result.options.filter(
-    (_, index) => index !== result.correct && index !== result.chosen,
-  );
+  const s = useStrings();
+  const { language } = useLanguage();
+  const copy = language === 'en' ? result.english : result;
+  const titleId = useId();
+  const chess = result.chess;
+  const attemptLabel = result.chessLine
+    ? mine
+      ? s.matchReview.yourMoves
+      : s.matchReview.playerMoves(name)
+    : mine
+      ? s.yourAnswer
+      : s.playerAnswer(name);
   return (
     <section
-      className={`answer-result ${correct ? 'result-success' : timedOut ? 'result-timeout' : 'result-miss'}`}
-      aria-labelledby="result-title"
-      aria-live="polite"
+      className={`question-card answer-review${mine ? '' : ' watch-question'}${dismiss && placement === 'popover' ? ' answer-popover' : ''}`}
+      aria-labelledby={titleId}
+      aria-live={dismiss ? 'polite' : undefined}
+      style={mine && color ? ({ '--turn-color': color } as CSSProperties) : undefined}
     >
-      <div className="solution-heading">
-        <h2 id="result-title">{title}</h2>
-        <button className="solution-close" aria-label={s.close} onClick={dismiss}>
-          ×
-        </button>
-      </div>
-      <div className="result-question">
-        <Polygon n={result.n} mark={result.mark} />
-        <p lang="es">{result.text}</p>
-      </div>
-      <dl className="result-options">
-        <div className="correct">
-          <dt>{s.correctAnswer}</dt>
-          <dd lang="es">{result.options[result.correct]}</dd>
+      <header className="question-ribbon review-ribbon">
+        <div>
+          <strong id={titleId}>{answerOutcome(s, result, name)}</strong>
+          {chess && <h2>{copy.text}</h2>}
         </div>
-        {!timedOut && !correct && (
-          <div className="wrong">
-            <dt>{mine ? s.yourAnswer : s.playerAnswer(name)}</dt>
-            <dd lang="es">{result.options[result.chosen]}</dd>
+        {dismiss && (
+          <button className="action secondary close" aria-label={s.close} onClick={dismiss}>
+            <X size={18} aria-hidden="true" />
+          </button>
+        )}
+      </header>
+      <div className="question-body">
+        {chess ? (
+          <ChessBoard
+            puzzle={chess}
+            solution={result.chessLine ? undefined : copy.options[result.correct]}
+          />
+        ) : (
+          <div className="question-prompt with-diagram">
+            <div className={topic === 'polygons' ? 'question-diagram' : 'question-emblem'}>
+              <TopicArt topic={topic} sides={result.n} mark={result.mark} />
+            </div>
+            <h2>{copy.text}</h2>
           </div>
         )}
-      </dl>
-      <p className="result-other-options">{s.otherOptions(others)}</p>
-      <div className="worked-solution">
-        <h3>{s.workedSolution}</h3>
-        <p className="explanation" lang="es">
-          {result.explanation}
-        </p>
+        <SolutionDetails
+          solution={result}
+          topic={topic}
+          attempt={result}
+          attemptLabel={attemptLabel}
+        />
       </div>
     </section>
   );
 }
 
+function MatchReviewDialog({
+  panel,
+  review,
+  close,
+}: {
+  panel: ReviewPanel;
+  review: NonNullable<PublicState['matchReview']>;
+  close: () => void;
+}) {
+  const s = useStrings();
+  const { language } = useLanguage();
+  const [index, setIndex] = useState(0);
+  const personal = panel === 'answers';
+  const answers = useMemo(
+    () =>
+      review.answers
+        .slice()
+        .reverse()
+        .sort((a, b) => Number(a.outcome === 'correct') - Number(b.outcome === 'correct')),
+    [review.answers],
+  );
+  const items = personal ? answers : review.recap;
+  const answer = personal ? answers[index] : undefined;
+  const solution = items[index];
+  const copy = language === 'en' ? solution?.english : solution;
+
+  return (
+    <InfoDialog title={s.matchReview[panel]} close={close}>
+      {solution ? (
+        <div className="match-review-content" data-topic={topicTheme(review.topic)}>
+          <div className="match-review-controls">
+            <button
+              className="action secondary"
+              disabled={index === 0}
+              onClick={() => setIndex(index - 1)}
+            >
+              {s.howToBack}
+            </button>
+            <span aria-live="polite">{s.matchReview.position(index + 1, items.length)}</span>
+            <button
+              className="action secondary"
+              disabled={index + 1 >= items.length}
+              onClick={() => setIndex(index + 1)}
+            >
+              {s.howToNext}
+            </button>
+          </div>
+          {answer ? (
+            <AnswerReview
+              result={answer}
+              topic={review.topic}
+              name={s.you}
+              mine
+              placement="panel"
+            />
+          ) : (
+            <article className="recap-question" key={solution.id}>
+              <div className="question-prompt with-diagram">
+                {!solution.chess && (
+                  <div
+                    className={review.topic === 'polygons' ? 'question-diagram' : 'question-emblem'}
+                  >
+                    <TopicArt topic={review.topic} sides={solution.n} mark={solution.mark} />
+                  </div>
+                )}
+                <h3>{copy?.text}</h3>
+              </div>
+              {solution.chess && <ChessBoard puzzle={solution.chess} />}
+              <details className="recap-reveal">
+                <summary>{s.matchReview.reveal}</summary>
+                <SolutionDetails solution={solution} topic={review.topic} />
+              </details>
+            </article>
+          )}
+        </div>
+      ) : (
+        <p>{personal ? s.matchReview.noAnswers : s.matchReview.noRecap}</p>
+      )}
+    </InfoDialog>
+  );
+}
+
+const languageKey = 'pologony-language';
+
+function detectLanguage(): Language {
+  for (const locale of [...(navigator.languages ?? []), navigator.language]) {
+    const primary = locale.toLowerCase().split(/[-_]/, 1)[0];
+    if (primary === 'en' || primary === 'es') return primary;
+  }
+  return 'en';
+}
+
 export default function App() {
-  const { snapshot, you, send, ready, retrying, error, home, toasts } = useConnection();
-  const state = snapshot?.state;
-  const seen = useRef<{ connection: number; id?: number }>(undefined);
-  const [result, showResult] = useState<AnswerResult>();
-  const [tutorial, setTutorial] = useState(false);
-  const readHowTo = useRef(false);
-  const playing = Boolean(state && state.phase !== 'lobby' && state.phase !== 'over');
-  const myTurn = playing && state?.players[state.turn].id === you;
+  const [preferredLanguage, setPreferredLanguage] = useState<Language | undefined>(() => {
+    try {
+      const saved = localStorage.getItem(languageKey);
+      if (saved === 'en' || saved === 'es') return saved;
+    } catch {}
+  });
+  const [browserLanguage, setBrowserLanguage] = useState(detectLanguage);
+  const language = preferredLanguage ?? browserLanguage;
+
+  function changeLanguage(next: Language) {
+    setPreferredLanguage(next);
+    try {
+      localStorage.setItem(languageKey, next);
+    } catch {}
+  }
 
   useEffect(() => {
-    if (!state) {
+    document.documentElement.lang = language;
+  }, [language]);
+
+  useEffect(() => {
+    if (preferredLanguage) return;
+    const detect = () => setBrowserLanguage(detectLanguage());
+    window.addEventListener('languagechange', detect);
+    return () => window.removeEventListener('languagechange', detect);
+  }, [preferredLanguage]);
+
+  return (
+    <LanguageContext.Provider value={{ language, changeLanguage }}>
+      <Pologony />
+    </LanguageContext.Provider>
+  );
+}
+
+function Pologony() {
+  const s = useStrings();
+  const { snapshot, you, send, ready, retrying, error, leaving, backHome, toasts } =
+    useConnection();
+  const state = snapshot?.state;
+  const [tutorial, setTutorial] = useState(false);
+  const [exitOpen, setExitOpen] = useState(false);
+  const [reviewPanel, setReviewPanel] = useState<ReviewPanel>();
+  const tutorialSeen = useRef(false);
+  const presenter = state?.mode === 'projector' && state?.hostId === you;
+  const playing = Boolean(state && state.phase !== 'lobby' && state.phase !== 'over');
+  const myTurn = playing && state?.players[state.turn].id === you;
+  const showExit = Boolean(exitOpen && state && state.phase !== 'over');
+  const openExit = () => setExitOpen(true);
+  const leave = () => send({ t: 'leave' });
+  const canReview = Boolean(state?.matchReview);
+
+  useEffect(() => {
+    if (!canReview) setReviewPanel(undefined);
+  }, [canReview]);
+  const errorKey = (Object.keys(wireStrings.error) as (keyof Strings['error'])[]).find(
+    (key) => wireStrings.error[key] === error,
+  );
+  const localizedError =
+    error === wireStrings.sessionEnded ? s.sessionEnded : errorKey ? s.error[errorKey] : error;
+  const status = localizedError || (retrying ? s.reconnecting : !ready ? s.connecting : '');
+
+  useEffect(() => {
+    if (!state || state.phase === 'over') {
       setTutorial(false);
-      return;
+      setExitOpen(false);
     }
-    if (state.phase !== 'lobby' || readHowTo.current) return;
-    readHowTo.current = true;
+  }, [state?.phase]);
+
+  useEffect(() => {
+    if (state?.phase !== 'lobby' || tutorialSeen.current) return;
+    tutorialSeen.current = true;
     try {
       if (localStorage.getItem('seenHowTo')) return;
       localStorage.setItem('seenHowTo', '1');
@@ -1609,76 +2433,100 @@ export default function App() {
 
   useEffect(() => {
     document.title = myTurn ? s.turnTitle : s.title;
+  }, [myTurn, s.title, s.turnTitle]);
+
+  useEffect(() => {
     if (myTurn) navigator.vibrate?.(200);
   }, [myTurn]);
 
-  useEffect(() => {
-    const previous = seen.current;
-    seen.current = snapshot && { connection: snapshot.connection, id: snapshot.state.result?.id };
-    if (!state?.result || !previous || previous.connection !== snapshot?.connection) {
-      showResult(undefined);
-      return;
-    }
-    if (previous.id !== state.result.id) {
-      showResult(state.result);
-      const timer = setTimeout(() => showResult(undefined), 6000);
-      return () => clearTimeout(timer);
-    }
-  }, [snapshot?.connection, state?.result?.id]);
-
-  const feedback =
-    state && (toasts.length > 0 || result) ? (
-      <div className="feedback-layer">
-        <ul className="toast-stack" aria-live="polite" aria-relevant="additions">
-          {toasts.map(({ event }) => (
-            <EventMessage key={event.id} event={event} state={state} you={you} />
-          ))}
-        </ul>
-        {result && (
-          <div className="solution-space">
-            <ResultOverlay
-              key={result.id}
-              result={result}
-              mine={result.playerId === you}
-              name={state.players.find((player) => player.id === result.playerId)?.name ?? ''}
-              dismiss={() => showResult(undefined)}
-            />
-          </div>
-        )}
-      </div>
-    ) : undefined;
-
   let screen: ReactNode;
   if (!snapshot) {
-    screen = <Home ready={ready} send={send} />;
+    screen = (
+      <div className="home-shell">
+        <Home ready={ready} send={send} invite={invitedRoomCode()} backHome={backHome} />
+        <HomeFooter />
+      </div>
+    );
   } else if (snapshot.state.phase === 'lobby') {
-    screen = <Lobby state={snapshot.state} you={you} ready={ready} send={send} home={home} />;
+    screen = (
+      <Lobby
+        state={snapshot.state}
+        you={you}
+        ready={ready}
+        send={send}
+        openExit={openExit}
+        openHowTo={() => setTutorial(true)}
+        openReview={setReviewPanel}
+      />
+    );
   } else if (snapshot.state.phase === 'over') {
-    screen = <Results state={snapshot.state} home={home} />;
+    screen = (
+      <Results
+        state={snapshot.state}
+        home={leave}
+        ready={ready}
+        leaving={leaving}
+        presenter={presenter}
+        personal={snapshot.state.players.some((player) => player.id === you)}
+        openReview={setReviewPanel}
+        rematch={
+          snapshot.state.hostId === you && !snapshot.state.endedByHost
+            ? () => send({ t: 'rematch', version: snapshot.state.version })
+            : undefined
+        }
+      />
+    );
   } else {
     screen = (
       <Game
         snapshot={snapshot}
         you={you}
         ready={ready}
-        error={error}
+        error={localizedError}
         send={send}
-        home={home}
-        feedback={feedback}
+        openExit={openExit}
+        toasts={toasts}
         openHowTo={() => setTutorial(true)}
       />
     );
   }
 
   return (
-    <div className="app">
+    <div
+      className={`app${presenter ? ' presenter' : ''}`}
+      data-topic={topicTheme(state?.settings.topic ?? 'polygons')}
+    >
       <div className={`screen${playing ? ' playing' : ''}`}>
         {screen}
-        {!playing && feedback}
-        {tutorial && state && <HowTo close={() => setTutorial(false)} />}
-        {(retrying || !ready || error) && (
+        {reviewPanel && state?.matchReview && (
+          <MatchReviewDialog
+            panel={reviewPanel}
+            review={state.matchReview}
+            close={() => setReviewPanel(undefined)}
+          />
+        )}
+        {!playing && state && toasts.length > 0 && (
+          <div className="lobby-feedback">
+            <ToastStack toasts={toasts} state={state} you={you} />
+          </div>
+        )}
+        {tutorial && state && (
+          <HowTo close={() => setTutorial(false)} topic={state.settings.topic} />
+        )}
+        {showExit && state && (
+          <ExitConfirmation
+            state={state}
+            you={you}
+            ready={ready}
+            leaving={leaving}
+            status={status}
+            close={() => setExitOpen(false)}
+            confirm={leave}
+          />
+        )}
+        {status && !showExit && (
           <div className="status" role="status">
-            {retrying ? s.reconnecting : error || s.connecting}
+            {status}
           </div>
         )}
       </div>

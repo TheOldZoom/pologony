@@ -1,6 +1,6 @@
-import type { Mark } from '../shared/game';
+import type { ChessPuzzle, Mark, QuestionCopy } from '../shared/game';
 
-const TEXT = {
+const spanishText = {
   shape: (n: number) => {
     switch (n) {
       case 3:
@@ -23,6 +23,8 @@ const TEXT = {
   given: (shape: string, given: string, ask: string) => `En ${shape}, ${given}. ${ask}`,
   mystery: (given: string, ask: string) => `En un polígono regular, ${given}. ${ask}`,
   rounded: ' Redondea a dos decimales.',
+  and: 'y',
+  sin: 'sen',
   ask: {
     central: '¿Cuánto mide el ángulo central?',
     exterior: '¿Cuánto mide el ángulo exterior?',
@@ -79,15 +81,101 @@ const TEXT = {
   },
 };
 
-export type Question = {
-  text: string;
-  hint: string;
-  options: string[];
+const englishText: typeof spanishText = {
+  shape: (n) => {
+    switch (n) {
+      case 3:
+        return 'an equilateral triangle';
+      case 4:
+        return 'a square';
+      case 5:
+        return 'a regular pentagon';
+      case 6:
+        return 'a regular hexagon';
+      case 7:
+        return 'a regular heptagon';
+      case 8:
+        return 'a regular octagon';
+      default:
+        return `a regular polygon with ${n} sides`;
+    }
+  },
+  named: (shape, ask) => `Consider ${shape}. ${ask}`,
+  given: (shape, given, ask) => `In ${shape}, ${given}. ${ask}`,
+  mystery: (given, ask) => `In a regular polygon, ${given}. ${ask}`,
+  rounded: ' Round to two decimal places.',
+  and: 'and',
+  sin: 'sin',
+  ask: {
+    central: 'What is the measure of the central angle?',
+    exterior: 'What is the measure of the exterior angle?',
+    interior: 'What is the measure of the interior angle?',
+    sum: 'What is the sum of the interior angles?',
+    vertex: 'How many diagonals extend from one vertex?',
+    diagonals: 'How many diagonals are there in total?',
+    side: 'How long is each side?',
+    radius: 'What is the radius?',
+    apothem: 'What is the apothem?',
+    perimeter: 'What is the perimeter?',
+    area: 'What is the area?',
+    estimateArea: 'What is the approximate area using these measurements?',
+  },
+  side: (l) => `each side is ${l} cm long`,
+  diagonal: (d) => `the diagonal is ${d} cm long`,
+  apothem: (a) => `the apothem is ${a} cm`,
+  approximateApothem: (a) => `the apothem is approximately ${a} cm`,
+  radius: (r) => `the radius is ${r} cm`,
+  perimeter: (p) => `the perimeter is ${p} cm`,
+  sum: (s) => `the interior angles add up to ${s}°`,
+  interior: (i) => `each interior angle measures ${i}°`,
+  central: (c) => `each central angle measures ${c}°`,
+  exterior: (e) => `each exterior angle measures ${e}°`,
+  diagonals: (d) => `there are ${d} diagonals in total`,
+  length: ' cm',
+  area: ' cm²',
+  angle: '°',
+  hint: {
+    turn: 'The central angles add up to 360°, and so do the exterior angles.',
+    interior: 'The interior and exterior angles at the same vertex add up to 180°.',
+    sum: 'Drawing diagonals from one vertex divides the polygon into n − 2 triangles.',
+    vertex: 'A vertex cannot be joined to itself or to either of its neighbors by a diagonal.',
+    diagonals: 'Counting from every vertex counts each diagonal twice.',
+    perimeter: 'Multiply the number of sides by the length of one side.',
+    fromSum: 'Set the sum equal to (n − 2)·180° and solve for n.',
+    fromInterior: 'Subtract the interior angle from 180° and use the exterior angle to find n.',
+    fromTurn: 'Divide 360° by the given angle to find n.',
+    fromDiagonals: 'Solve n(n − 3)/2 = D and take the positive root.',
+    triangle:
+      'Join the center to a vertex and to the midpoint of a side. This forms a 30°–60°–90° triangle.',
+    squareApothem: 'The apothem of a square is half its side length.',
+    squareDiagonal: 'The diagonal forms two right triangles with equal legs.',
+    squareRadius: 'The diagonal of a square passes through the center and is twice the radius.',
+    hexRadius: 'Joining the vertices to the center forms six equilateral triangles.',
+    hexApothem: 'The apothem is the height of one of the six equilateral triangles.',
+    areaFromMeasures: 'Multiply the perimeter by the apothem and divide by two.',
+    triangleArea:
+      'The height of an equilateral triangle is l√3/2. Multiply the base by the height and divide by two.',
+    squareArea: 'The area of a square is the side length squared.',
+    hexArea: 'Divide the hexagon into six equilateral triangles and add their areas.',
+    area: 'Find the side length and apothem. Multiply the perimeter by the apothem and divide by two.',
+    trig: 'Use the right triangle formed by the radius, the apothem, and half a side. Its angle at the center is 180°/n.',
+  },
+};
+
+export type Question = QuestionCopy & {
+  english: QuestionCopy & { explanation: string };
   correct: number;
   explanation: string;
-  n: number;
+  n?: number;
   mark: Mark;
   mystery?: true;
+  chess?: ChessPuzzle;
+  chessLine?: {
+    reply: string;
+    position: string;
+    options: string[];
+    correct: number;
+  };
 };
 
 type Exercise = {
@@ -100,12 +188,9 @@ type Exercise = {
   explain: string;
 };
 
-const rand = (a: number, b: number) => a + Math.floor(Math.random() * (b - a + 1));
-const pick = <T>(choices: readonly T[]): T => choices[rand(0, choices.length - 1)];
-
-function shuffle<T>(items: T[]): T[] {
+export function shuffle<T>(items: T[], random = Math.random): T[] {
   for (let i = items.length - 1; i > 0; i--) {
-    const j = rand(0, i);
+    const j = Math.floor(random() * (i + 1));
     [items[i], items[j]] = [items[j], items[i]];
   }
   return items;
@@ -121,7 +206,6 @@ function exact(numerator: number, denominator = 1, radical?: 2 | 3): string {
   return bottom === 1 ? base : `${base}/${bottom}`;
 }
 
-const decimal = (n: number) => n.toFixed(2).replace('.', ',');
 const totalDiagonals = (n: number) => (n * (n - 3)) / 2;
 const interior = (n: number) => ((n - 2) * 180) / n;
 const numbers = (min: number, max: number) =>
@@ -129,481 +213,508 @@ const numbers = (min: number, max: number) =>
 const sides = numbers(3, 12);
 const integerAngles = sides.filter((n) => 360 % n === 0);
 
-function measurement(
-  n: number,
-  key: 'central' | 'exterior' | 'interior' | 'sum' | 'vertex' | 'diagonals',
-) {
-  const interiorSum = (n - 2) * 180;
-  const D = totalDiagonals(n);
-  const angleWrong = [
-    exact(interiorSum, n),
-    exact(360, n),
-    exact(180, n),
-    exact(360, n + 1),
-    String(interiorSum),
-    '180',
-  ];
+function polygonQuestion(landedSides: number, TEXT: typeof spanishText, random: () => number) {
+  const rand = (a: number, b: number) => a + Math.floor(random() * (b - a + 1));
+  const pick = <T>(choices: readonly T[]): T => choices[rand(0, choices.length - 1)];
+  const decimal = (n: number) => n.toFixed(2).replace('.', TEXT === spanishText ? ',' : '.');
 
-  switch (key) {
-    case 'central':
-    case 'exterior':
-      return {
-        answer: exact(360, n),
-        wrong: angleWrong,
-        unit: TEXT.angle,
-        hint: TEXT.hint.turn,
-        mark: key === 'central' ? ('radius' as const) : ('none' as const),
-        explain: `360°/${n} = ${exact(360, n)}°`,
-      };
-    case 'interior':
-      return {
-        answer: exact(interiorSum, n),
-        wrong: angleWrong,
-        unit: TEXT.angle,
-        hint: TEXT.hint.interior,
-        explain: `(${n} − 2)·180°/${n} = ${exact(interiorSum, n)}°`,
-      };
-    case 'sum':
-      return {
-        answer: String(interiorSum),
-        wrong: angleWrong,
-        unit: TEXT.angle,
-        hint: TEXT.hint.sum,
-        explain: `(${n} − 2)·180° = ${interiorSum}°`,
-      };
-    case 'vertex':
-    case 'diagonals':
-      return {
-        answer: String(key === 'vertex' ? n - 3 : D),
-        wrong: [n - 3, D, n - 2, (n * (n - 1)) / 2, D * 2, n + 1].map(String),
-        hint: key === 'vertex' ? TEXT.hint.vertex : TEXT.hint.diagonals,
-        explain: key === 'vertex' ? `${n} − 3 = ${n - 3}` : `${n}·(${n} − 3)/2 = ${D}`,
-      };
+  function measurement(
+    n: number,
+    key: 'central' | 'exterior' | 'interior' | 'sum' | 'vertex' | 'diagonals',
+  ) {
+    const interiorSum = (n - 2) * 180;
+    const D = totalDiagonals(n);
+    const angleWrong = [
+      exact(interiorSum, n),
+      exact(360, n),
+      exact(180, n),
+      exact(360, n + 1),
+      String(interiorSum),
+      '180',
+    ];
+
+    switch (key) {
+      case 'central':
+      case 'exterior':
+        return {
+          answer: exact(360, n),
+          wrong: angleWrong,
+          unit: TEXT.angle,
+          hint: TEXT.hint.turn,
+          mark: key === 'central' ? ('radius' as const) : ('none' as const),
+          explain: `360°/${n} = ${exact(360, n)}°`,
+        };
+      case 'interior':
+        return {
+          answer: exact(interiorSum, n),
+          wrong: angleWrong,
+          unit: TEXT.angle,
+          hint: TEXT.hint.interior,
+          explain: `(${n} − 2)·180°/${n} = ${exact(interiorSum, n)}°`,
+        };
+      case 'sum':
+        return {
+          answer: String(interiorSum),
+          wrong: angleWrong,
+          unit: TEXT.angle,
+          hint: TEXT.hint.sum,
+          explain: `(${n} − 2)·180° = ${interiorSum}°`,
+        };
+      case 'vertex':
+      case 'diagonals':
+        return {
+          answer: String(key === 'vertex' ? n - 3 : D),
+          wrong: [n - 3, D, n - 2, (n * (n - 1)) / 2, D * 2, n + 1].map(String),
+          hint: key === 'vertex' ? TEXT.hint.vertex : TEXT.hint.diagonals,
+          explain: key === 'vertex' ? `${n} − 3 = ${n - 3}` : `${n}·(${n} − 3)/2 = ${D}`,
+        };
+    }
   }
-}
 
-const measures = ['central', 'exterior', 'interior', 'sum', 'vertex', 'diagonals'] as const;
-const freshLengths = numbers(4, 18).filter((l) => ![6, 7, 10, 12, 15].includes(l));
+  const measures = ['central', 'exterior', 'interior', 'sum', 'vertex', 'diagonals'] as const;
+  const freshLengths = numbers(4, 18).filter((l) => ![6, 7, 10, 12, 15].includes(l));
 
-function namedMeasurement(n: number): Exercise {
-  const key = pick(measures);
-  return { ...measurement(n, key), text: TEXT.named(TEXT.shape(n), TEXT.ask[key]) };
-}
-
-function perimeter(n: number, l: number) {
-  return {
-    hint: TEXT.hint.perimeter,
-    answer: String(n * l),
-    wrong: [l, n, (n - 2) * l, 2 * n * l].map(String),
-    unit: TEXT.length,
-    explain: `P = ${n}·${l} = ${n * l} cm`,
-  };
-}
-
-function namedPerimeter(n: number, l: number): Exercise {
-  return {
-    ...perimeter(n, l),
-    mark: 'side',
-    text: TEXT.given(TEXT.shape(n), TEXT.side(l), TEXT.ask.perimeter),
-  };
-}
-
-function areaFromPerimeter(n: number, l: number): Exercise {
-  const P = n * l;
-  const hint = TEXT.hint.areaFromMeasures;
-  const shape = TEXT.shape(n);
-
-  if (n === 3 || n === 4 || n === 6) {
-    const denominator = n === 3 ? 6 : 2;
-    const radical = n === 4 ? undefined : 3;
-    const a = exact(l, denominator, radical);
-    const product = P * l;
-    const answer = exact(product, 2 * denominator, radical);
+  function namedMeasurement(n: number): Exercise {
+    const key = pick(measures);
     return {
-      text: TEXT.given(shape, `${TEXT.perimeter(P)} y ${TEXT.apothem(a)}`, TEXT.ask.area),
+      ...measurement(n, key),
+      text: TEXT.named(TEXT.shape(n), TEXT.ask[key]),
+    };
+  }
+
+  function perimeter(n: number, l: number) {
+    return {
+      hint: TEXT.hint.perimeter,
+      answer: String(n * l),
+      wrong: [l, n, (n - 2) * l, 2 * n * l].map(String),
+      unit: TEXT.length,
+      explain: `P = ${n}·${l} = ${n * l} cm`,
+    };
+  }
+
+  function namedPerimeter(n: number, l: number): Exercise {
+    return {
+      ...perimeter(n, l),
+      mark: 'side',
+      text: TEXT.given(TEXT.shape(n), TEXT.side(l), TEXT.ask.perimeter),
+    };
+  }
+
+  function areaFromPerimeter(n: number, l: number): Exercise {
+    const P = n * l;
+    const hint = TEXT.hint.areaFromMeasures;
+    const shape = TEXT.shape(n);
+
+    if (n === 3 || n === 4 || n === 6) {
+      const denominator = n === 3 ? 6 : 2;
+      const radical = n === 4 ? undefined : 3;
+      const a = exact(l, denominator, radical);
+      const product = P * l;
+      const answer = exact(product, 2 * denominator, radical);
+      return {
+        text: TEXT.given(
+          shape,
+          `${TEXT.perimeter(P)} ${TEXT.and} ${TEXT.apothem(a)}`,
+          TEXT.ask.area,
+        ),
+        hint,
+        answer,
+        unit: TEXT.area,
+        mark: 'apothem',
+        wrong: [
+          exact(product, denominator, radical),
+          exact(product, 4 * denominator, radical),
+          exact(l * l, 2 * denominator, radical),
+        ],
+        explain: `A = P·a/2 = ${P}·(${a})/2 = ${answer} cm²`,
+      };
+    }
+
+    const apothemCents = Math.round((100 * l) / (2 * Math.tan(Math.PI / n)));
+    const a = decimal(apothemCents / 100);
+    const answer = decimal(Math.round((P * apothemCents) / 2) / 100);
+    return {
+      text:
+        TEXT.given(
+          shape,
+          `${TEXT.perimeter(P)} ${TEXT.and} ${TEXT.approximateApothem(a)}`,
+          TEXT.ask.estimateArea,
+        ) + TEXT.rounded,
       hint,
       answer,
       unit: TEXT.area,
       mark: 'apothem',
       wrong: [
-        exact(product, denominator, radical),
-        exact(product, 4 * denominator, radical),
-        exact(l * l, 2 * denominator, radical),
+        decimal((P * apothemCents) / 100),
+        decimal((l * apothemCents) / 200),
+        decimal(Math.round((P * apothemCents) / 4) / 100),
       ],
-      explain: `A = P·a/2 = ${P}·(${a})/2 = ${answer} cm²`,
+      explain: `A = P·a/2 ≈ ${P}·${a}/2 ≈ ${answer} cm²`,
     };
   }
 
-  const apothemCents = Math.round((100 * l) / (2 * Math.tan(Math.PI / n)));
-  const a = decimal(apothemCents / 100);
-  const answer = decimal(Math.round((P * apothemCents) / 2) / 100);
-  return {
-    text:
-      TEXT.given(
-        shape,
-        `${TEXT.perimeter(P)} y ${TEXT.approximateApothem(a)}`,
-        TEXT.ask.estimateArea,
-      ) + TEXT.rounded,
-    hint,
-    answer,
-    unit: TEXT.area,
-    mark: 'apothem',
-    wrong: [
-      decimal((P * apothemCents) / 100),
-      decimal((l * apothemCents) / 200),
-      decimal(Math.round((P * apothemCents) / 4) / 100),
-    ],
-    explain: `A = P·a/2 ≈ ${P}·${a}/2 ≈ ${answer} cm²`,
-  };
-}
+  const sideArea = {
+    3: {
+      multiplier: 1,
+      denominator: 4,
+      radical: 3,
+      formula: 'l²√3/4',
+      hint: TEXT.hint.triangleArea,
+    },
+    4: {
+      multiplier: 1,
+      denominator: 1,
+      radical: undefined,
+      formula: 'l²',
+      hint: TEXT.hint.squareArea,
+    },
+    6: {
+      multiplier: 3,
+      denominator: 2,
+      radical: 3,
+      formula: '3·l²√3/2',
+      hint: TEXT.hint.hexArea,
+    },
+  } as const;
 
-const sideArea = {
-  3: { multiplier: 1, denominator: 4, radical: 3, formula: 'l²√3/4', hint: TEXT.hint.triangleArea },
-  4: {
-    multiplier: 1,
-    denominator: 1,
-    radical: undefined,
-    formula: 'l²',
-    hint: TEXT.hint.squareArea,
-  },
-  6: { multiplier: 3, denominator: 2, radical: 3, formula: '3·l²√3/2', hint: TEXT.hint.hexArea },
-} as const;
+  function areaFromSide(n: keyof typeof sideArea, l: number): Exercise {
+    const { multiplier, denominator, radical, formula, hint } = sideArea[n];
+    const numerator = multiplier * l * l;
+    const answer = exact(numerator, denominator, radical);
+    return {
+      text: TEXT.given(TEXT.shape(n), TEXT.side(l), TEXT.ask.area),
+      hint,
+      answer,
+      unit: TEXT.area,
+      mark: 'side',
+      wrong: [
+        exact(2 * numerator, denominator, radical),
+        exact(numerator, 2 * denominator, radical),
+        String(radical ? l * l : 4 * l),
+        String(l * l + l),
+      ],
+      explain: `A = ${formula} = ${formula.replace('l', `(${l})`)} = ${answer} cm²`,
+    };
+  }
 
-function areaFromSide(n: keyof typeof sideArea, l: number): Exercise {
-  const { multiplier, denominator, radical, formula, hint } = sideArea[n];
-  const numerator = multiplier * l * l;
-  const answer = exact(numerator, denominator, radical);
-  return {
-    text: TEXT.given(TEXT.shape(n), TEXT.side(l), TEXT.ask.area),
-    hint,
-    answer,
-    unit: TEXT.area,
-    mark: 'side',
-    wrong: [
-      exact(2 * numerator, denominator, radical),
-      exact(numerator, 2 * denominator, radical),
-      String(radical ? l * l : 4 * l),
-      String(l * l + l),
-    ],
-    explain: `A = ${formula} = ${formula.replace('l', `(${l})`)} = ${answer} cm²`,
-  };
-}
-
-function triangle(n: number, l: number): Exercise {
-  const kind = pick([
-    'radiusFromSide',
-    'sideFromRadius',
-    'apothemFromRadius',
-    'areaFromSide',
-  ] as const);
-  if (kind === 'areaFromSide') return areaFromSide(3, l);
-  const fromSide = kind === 'radiusFromSide';
-  const ask = fromSide ? 'radius' : kind === 'sideFromRadius' ? 'side' : 'apothem';
-  const answer = fromSide
-    ? exact(l, 3, 3)
-    : kind === 'sideFromRadius'
-      ? exact(l, 1, 3)
-      : exact(l, 2);
-  const wrong = [exact(l, 6, 3), exact(l, 2, 3), exact(l, 1, 3), exact(l, 2), String(2 * l)];
-  return {
-    text: TEXT.given(TEXT.shape(n), fromSide ? TEXT.side(l) : TEXT.radius(l), TEXT.ask[ask]),
-    hint: TEXT.hint.triangle,
-    answer,
-    wrong,
-    unit: TEXT.length,
-    mark: fromSide ? 'side' : 'radius',
-    explain: fromSide
-      ? `r = l√3/3 = ${answer} cm`
+  function triangle(n: number, l: number): Exercise {
+    const kind = pick([
+      'radiusFromSide',
+      'sideFromRadius',
+      'apothemFromRadius',
+      'areaFromSide',
+    ] as const);
+    if (kind === 'areaFromSide') return areaFromSide(3, l);
+    const fromSide = kind === 'radiusFromSide';
+    const ask = fromSide ? 'radius' : kind === 'sideFromRadius' ? 'side' : 'apothem';
+    const answer = fromSide
+      ? exact(l, 3, 3)
       : kind === 'sideFromRadius'
-        ? `l = r√3 = ${answer} cm`
-        : `a = r/2 = ${exact(l, 2)} cm`,
-  };
-}
-
-function square(n: number, l: number): Exercise {
-  const mode = pick([
-    'apothem',
-    'radicalApothem',
-    'diagonal',
-    'diagonalToApothem',
-    'radius',
-    'side',
-  ] as const);
-  if (mode === 'side') return areaFromSide(4, l);
-  const square = l * l;
-  const apothem = mode === 'apothem' || mode === 'radicalApothem';
-  const given = apothem
-    ? TEXT.apothem(mode === 'apothem' ? String(l) : exact(l, 1, 2))
-    : mode === 'radius'
-      ? TEXT.radius(l)
-      : TEXT.diagonal(l);
-  if (mode === 'diagonalToApothem') {
-    const answer = exact(l, 4, 2);
+        ? exact(l, 1, 3)
+        : exact(l, 2);
+    const wrong = [exact(l, 6, 3), exact(l, 2, 3), exact(l, 1, 3), exact(l, 2), String(2 * l)];
     return {
-      text: TEXT.given(TEXT.shape(n), given, TEXT.ask.apothem),
-      hint: TEXT.hint.squareDiagonal,
-      mark: 'diagonals',
+      text: TEXT.given(TEXT.shape(n), fromSide ? TEXT.side(l) : TEXT.radius(l), TEXT.ask[ask]),
+      hint: TEXT.hint.triangle,
       answer,
-      wrong: [exact(l, 2, 2), exact(l, 2), exact(l, 4), String(l)],
+      wrong,
       unit: TEXT.length,
-      explain: `l = D/√2 = ${exact(l, 2, 2)} cm\na = l/2 = ${answer} cm`,
+      mark: fromSide ? 'side' : 'radius',
+      explain: fromSide
+        ? `r = l√3/3 = ${answer} cm`
+        : kind === 'sideFromRadius'
+          ? `l = r√3 = ${answer} cm`
+          : `a = r/2 = ${exact(l, 2)} cm`,
     };
   }
-  const answer =
-    mode === 'apothem'
-      ? String(4 * square)
-      : mode === 'radicalApothem'
-        ? String(8 * square)
-        : mode === 'radius'
-          ? String(2 * square)
-          : exact(square, 2);
-  const lead = apothem
-    ? `l = 2a = ${mode === 'apothem' ? 2 * l : exact(2 * l, 1, 2)} cm`
-    : `D = 2r = ${2 * l} cm`;
-  return {
-    text: TEXT.given(TEXT.shape(n), given, TEXT.ask.area),
-    hint: apothem
-      ? TEXT.hint.squareApothem
+
+  function square(n: number, l: number): Exercise {
+    const mode = pick([
+      'apothem',
+      'radicalApothem',
+      'diagonal',
+      'diagonalToApothem',
+      'radius',
+      'side',
+    ] as const);
+    if (mode === 'side') return areaFromSide(4, l);
+    const square = l * l;
+    const apothem = mode === 'apothem' || mode === 'radicalApothem';
+    const given = apothem
+      ? TEXT.apothem(mode === 'apothem' ? String(l) : exact(l, 1, 2))
       : mode === 'radius'
-        ? TEXT.hint.squareRadius
-        : TEXT.hint.squareDiagonal,
-    answer,
-    wrong: [exact(square, 2), square, 2 * square, 4 * square, 8 * square, 16 * square].map(String),
-    unit: TEXT.area,
-    mark: apothem ? 'apothem' : mode === 'radius' ? 'radius' : 'diagonals',
-    explain:
-      mode === 'diagonal'
-        ? `A = D²/2 = ${l}²/2 = ${answer} cm²`
-        : `${lead}\nA = ${mode === 'radius' ? 'D²/2' : 'l²'} = ${answer} cm²`,
-  };
-}
-
-function hexagon(n: number, l: number): Exercise {
-  const mode = pick([
-    'areaFromApothem',
-    'apothemFromRadius',
-    'sideFromRadius',
-    'apothemFromPerimeter',
-    'areaFromPerimeter',
-    'areaFromSide',
-  ] as const);
-  if (mode === 'areaFromSide') return areaFromSide(6, l);
-  const fromRadius = mode === 'apothemFromRadius' || mode === 'sideFromRadius';
-  const fromApothem = mode === 'areaFromApothem';
-  const given = fromApothem
-    ? TEXT.apothem(exact(l, 1, 3))
-    : fromRadius
-      ? TEXT.radius(l)
-      : TEXT.perimeter(n * l);
-  const hint = fromApothem
-    ? TEXT.hint.hexApothem
-    : fromRadius
-      ? TEXT.hint.hexRadius
-      : TEXT.hint.perimeter;
-  const mark = fromApothem ? 'apothem' : fromRadius ? 'radius' : 'none';
-  if (mode === 'sideFromRadius') {
+        ? TEXT.radius(l)
+        : TEXT.diagonal(l);
+    if (mode === 'diagonalToApothem') {
+      const answer = exact(l, 4, 2);
+      return {
+        text: TEXT.given(TEXT.shape(n), given, TEXT.ask.apothem),
+        hint: TEXT.hint.squareDiagonal,
+        mark: 'diagonals',
+        answer,
+        wrong: [exact(l, 2, 2), exact(l, 2), exact(l, 4), String(l)],
+        unit: TEXT.length,
+        explain: `l = D/√2 = ${exact(l, 2, 2)} cm\na = l/2 = ${answer} cm`,
+      };
+    }
+    const answer =
+      mode === 'apothem'
+        ? String(4 * square)
+        : mode === 'radicalApothem'
+          ? String(8 * square)
+          : mode === 'radius'
+            ? String(2 * square)
+            : exact(square, 2);
+    const lead = apothem
+      ? `l = 2a = ${mode === 'apothem' ? 2 * l : exact(2 * l, 1, 2)} cm`
+      : `D = 2r = ${2 * l} cm`;
     return {
-      text: TEXT.given(TEXT.shape(n), given, TEXT.ask.side),
-      hint,
-      mark,
-      answer: String(l),
-      wrong: [exact(l, 2, 3), exact(l, 2), String(2 * l)],
-      unit: TEXT.length,
-      explain: `l = r = ${l} cm`,
+      text: TEXT.given(TEXT.shape(n), given, TEXT.ask.area),
+      hint: apothem
+        ? TEXT.hint.squareApothem
+        : mode === 'radius'
+          ? TEXT.hint.squareRadius
+          : TEXT.hint.squareDiagonal,
+      answer,
+      wrong: [exact(square, 2), square, 2 * square, 4 * square, 8 * square, 16 * square].map(
+        String,
+      ),
+      unit: TEXT.area,
+      mark: apothem ? 'apothem' : mode === 'radius' ? 'radius' : 'diagonals',
+      explain:
+        mode === 'diagonal'
+          ? `A = D²/2 = ${l}²/2 = ${answer} cm²`
+          : `${lead}\nA = ${mode === 'radius' ? 'D²/2' : 'l²'} = ${answer} cm²`,
     };
   }
-  if (mode === 'apothemFromRadius' || mode === 'apothemFromPerimeter') {
-    const answer = exact(l, 2, 3);
+
+  function hexagon(n: number, l: number): Exercise {
+    const mode = pick([
+      'areaFromApothem',
+      'apothemFromRadius',
+      'sideFromRadius',
+      'apothemFromPerimeter',
+      'areaFromPerimeter',
+      'areaFromSide',
+    ] as const);
+    if (mode === 'areaFromSide') return areaFromSide(6, l);
+    const fromRadius = mode === 'apothemFromRadius' || mode === 'sideFromRadius';
+    const fromApothem = mode === 'areaFromApothem';
+    const given = fromApothem
+      ? TEXT.apothem(exact(l, 1, 3))
+      : fromRadius
+        ? TEXT.radius(l)
+        : TEXT.perimeter(n * l);
+    const hint = fromApothem
+      ? TEXT.hint.hexApothem
+      : fromRadius
+        ? TEXT.hint.hexRadius
+        : TEXT.hint.perimeter;
+    const mark = fromApothem ? 'apothem' : fromRadius ? 'radius' : 'none';
+    if (mode === 'sideFromRadius') {
+      return {
+        text: TEXT.given(TEXT.shape(n), given, TEXT.ask.side),
+        hint,
+        mark,
+        answer: String(l),
+        wrong: [exact(l, 2, 3), exact(l, 2), String(2 * l)],
+        unit: TEXT.length,
+        explain: `l = r = ${l} cm`,
+      };
+    }
+    if (mode === 'apothemFromRadius' || mode === 'apothemFromPerimeter') {
+      const answer = exact(l, 2, 3);
+      return {
+        text: TEXT.given(TEXT.shape(n), given, TEXT.ask.apothem),
+        hint,
+        mark,
+        answer,
+        wrong: [String(l), exact(l, 1, 3), exact(l, 2), exact(l, 4, 3)],
+        unit: TEXT.length,
+        explain: `l = ${fromRadius ? 'r' : 'P/6'} = ${l} cm\na = l√3/2 = ${answer} cm`,
+      };
+    }
+    const side = fromApothem ? 2 * l : l;
+    const answer = exact(3 * side * side, 2, 3);
     return {
-      text: TEXT.given(TEXT.shape(n), given, TEXT.ask.apothem),
+      text: TEXT.given(TEXT.shape(n), given, TEXT.ask.area),
       hint,
       mark,
       answer,
-      wrong: [String(l), exact(l, 1, 3), exact(l, 2), exact(l, 4, 3)],
-      unit: TEXT.length,
-      explain: `l = ${fromRadius ? 'r' : 'P/6'} = ${l} cm\na = l√3/2 = ${answer} cm`,
+      wrong: [
+        exact(3 * side * side, 1, 3),
+        exact(side * side, 2, 3),
+        exact(side * side, 4, 3),
+        String(6 * side * side),
+      ],
+      unit: TEXT.area,
+      explain: `l = ${fromApothem ? '2a/√3' : 'P/6'} = ${side} cm\nA = 3l²√3/2 = ${answer} cm²`,
     };
   }
-  const side = fromApothem ? 2 * l : l;
-  const answer = exact(3 * side * side, 2, 3);
-  return {
-    text: TEXT.given(TEXT.shape(n), given, TEXT.ask.area),
-    hint,
-    mark,
-    answer,
-    wrong: [
-      exact(3 * side * side, 1, 3),
-      exact(side * side, 2, 3),
-      exact(side * side, 4, 3),
-      String(6 * side * side),
-    ],
-    unit: TEXT.area,
-    explain: `l = ${fromApothem ? '2a/√3' : 'P/6'} = ${side} cm\nA = 3l²√3/2 = ${answer} cm²`,
-  };
-}
 
-function trig(n: number, l: number): Exercise {
-  const ask = n === 5 ? 'area' : pick(['area', 'apothem', 'radius'] as const);
-  const angle = Math.PI / n;
-  const a = l / (2 * Math.tan(angle));
-  const r = l / (2 * Math.sin(angle));
-  const area = (n * l * a) / 2;
-  const given = n === 5 ? TEXT.perimeter(n * l) : TEXT.side(l);
-  const base = { text: TEXT.given(TEXT.shape(n), given, TEXT.ask[ask]) + TEXT.rounded };
+  function trig(n: number, l: number): Exercise {
+    const ask = n === 5 ? 'area' : pick(['area', 'apothem', 'radius'] as const);
+    const angle = Math.PI / n;
+    const a = l / (2 * Math.tan(angle));
+    const r = l / (2 * Math.sin(angle));
+    const area = (n * l * a) / 2;
+    const given = n === 5 ? TEXT.perimeter(n * l) : TEXT.side(l);
+    const base = {
+      text: TEXT.given(TEXT.shape(n), given, TEXT.ask[ask]) + TEXT.rounded,
+    };
 
-  if (ask === 'area') {
+    if (ask === 'area') {
+      return {
+        ...base,
+        hint: TEXT.hint.area,
+        mark: n === 5 ? 'none' : 'side',
+        answer: decimal(area),
+        wrong: [2 * area, area / n, (n * l * r) / 2, n * l * l].map(decimal),
+        unit: TEXT.area,
+        explain: `${n === 5 ? `l = P/${n} = ${l} cm\n` : ''}a = ${l}/(2·tan(180°/${n})) ≈ ${decimal(a)} cm\nA = ${n}·${l}·a/2 ≈ ${decimal(area)} cm²`,
+      };
+    }
+    const radius = ask === 'radius';
+    const answer = radius ? r : a;
     return {
       ...base,
-      hint: TEXT.hint.area,
-      mark: n === 5 ? 'none' : 'side',
-      answer: decimal(area),
-      wrong: [2 * area, area / n, (n * l * r) / 2, n * l * l].map(decimal),
-      unit: TEXT.area,
-      explain: `${n === 5 ? `l = P/${n} = ${l} cm\n` : ''}a = ${l}/(2·tan(180°/${n})) ≈ ${decimal(a)} cm\nA = ${n}·${l}·a/2 ≈ ${decimal(area)} cm²`,
+      hint: TEXT.hint.trig,
+      mark: 'side',
+      answer: decimal(answer),
+      unit: TEXT.length,
+      wrong: [radius ? a : r, 2 * answer, answer / 2, l / 2].map(decimal),
+      explain: `${radius ? 'r' : 'a'} = ${l}/(2·${radius ? TEXT.sin : 'tan'}(180°/${n})) ≈ ${decimal(answer)} cm`,
     };
   }
-  const radius = ask === 'radius';
-  const answer = radius ? r : a;
-  return {
-    ...base,
-    hint: TEXT.hint.trig,
-    mark: 'side',
-    answer: decimal(answer),
-    unit: TEXT.length,
-    wrong: [radius ? a : r, 2 * answer, answer / 2, l / 2].map(decimal),
-    explain: `${radius ? 'r' : 'a'} = ${l}/(2·${radius ? 'sen' : 'tan'}(180°/${n})) ≈ ${decimal(answer)} cm`,
-  };
-}
 
-const mysteryKinds = [
-  'sumToVertex',
-  'interiorToDiagonals',
-  'diagonalsToInterior',
-  'centralToSum',
-  'diagonalsToPerimeter',
-  'interiorToPerimeter',
-  'exteriorToSide',
-] as const;
+  const mysteryKinds = [
+    'sumToVertex',
+    'interiorToDiagonals',
+    'diagonalsToInterior',
+    'centralToSum',
+    'diagonalsToPerimeter',
+    'interiorToPerimeter',
+    'exteriorToSide',
+  ] as const;
 
-function mysteryFor(landedSides: number): { exercise: Exercise; n: number } {
-  const kind = pick(mysteryKinds);
-  const usesSingleAngle =
-    kind !== 'sumToVertex' && kind !== 'diagonalsToInterior' && kind !== 'diagonalsToPerimeter';
-  const eligibleSides = usesSingleAngle ? integerAngles : sides;
-  const worksheetSides: Record<(typeof mysteryKinds)[number], number[]> = {
-    sumToVertex: [7, 9],
-    interiorToDiagonals: [5, 6],
-    diagonalsToInterior: [3, 9, 12],
-    centralToSum: [5],
-    diagonalsToPerimeter: [3],
-    interiorToPerimeter: [],
-    exteriorToSide: [],
-  };
-  const n = pick(
-    eligibleSides.filter((n) => n !== landedSides && !worksheetSides[kind].includes(n)),
-  );
-  const D = totalDiagonals(n);
-  const sum = (n - 2) * 180;
-  const angle = 360 / n;
-  const inner = interior(n);
-  const l = pick(freshLengths);
-  let given: string;
-  let ask: string;
-  let first: string;
-  let hint: string;
-  let outcome: Omit<Exercise, 'text'>;
+  function mysteryFor(landedSides: number): { exercise: Exercise; n: number } {
+    const kind = pick(mysteryKinds);
+    const usesSingleAngle =
+      kind !== 'sumToVertex' && kind !== 'diagonalsToInterior' && kind !== 'diagonalsToPerimeter';
+    const eligibleSides = usesSingleAngle ? integerAngles : sides;
+    const worksheetSides: Record<(typeof mysteryKinds)[number], number[]> = {
+      sumToVertex: [7, 9],
+      interiorToDiagonals: [5, 6],
+      diagonalsToInterior: [3, 9, 12],
+      centralToSum: [5],
+      diagonalsToPerimeter: [3],
+      interiorToPerimeter: [],
+      exteriorToSide: [],
+    };
+    const n = pick(
+      eligibleSides.filter((n) => n !== landedSides && !worksheetSides[kind].includes(n)),
+    );
+    const D = totalDiagonals(n);
+    const sum = (n - 2) * 180;
+    const angle = 360 / n;
+    const inner = interior(n);
+    const l = pick(freshLengths);
+    let given: string;
+    let ask: string;
+    let first: string;
+    let hint: string;
+    let outcome: Omit<Exercise, 'text'>;
 
-  switch (kind) {
-    case 'sumToVertex':
-      given = TEXT.sum(sum);
-      ask = TEXT.ask.vertex;
-      hint = TEXT.hint.fromSum;
-      first = `n = ${sum}°/180° + 2 = ${n}`;
-      outcome = measurement(n, 'vertex');
-      break;
-    case 'interiorToDiagonals':
-    case 'interiorToPerimeter':
-      given =
-        kind === 'interiorToDiagonals'
-          ? TEXT.interior(inner)
-          : `${TEXT.interior(inner)} y ${TEXT.side(l)}`;
-      ask = kind === 'interiorToDiagonals' ? TEXT.ask.diagonals : TEXT.ask.perimeter;
-      hint = TEXT.hint.fromInterior;
-      first = `n = 360°/(180° − ${inner}°) = ${n}`;
-      outcome = kind === 'interiorToDiagonals' ? measurement(n, 'diagonals') : perimeter(n, l);
-      break;
-    case 'diagonalsToInterior':
-    case 'diagonalsToPerimeter':
-      given =
-        kind === 'diagonalsToInterior'
-          ? TEXT.diagonals(D)
-          : `${TEXT.diagonals(D)} y ${TEXT.side(l)}`;
-      ask = kind === 'diagonalsToInterior' ? TEXT.ask.interior : TEXT.ask.perimeter;
-      hint = TEXT.hint.fromDiagonals;
-      first = `n(n − 3)/2 = ${D}\nn = (3 + √(9 + 8·${D}))/2 = ${n}`;
-      outcome = kind === 'diagonalsToInterior' ? measurement(n, 'interior') : perimeter(n, l);
-      break;
-    case 'centralToSum':
-      given = TEXT.central(angle);
-      ask = TEXT.ask.sum;
-      hint = TEXT.hint.fromTurn;
-      first = `n = 360°/${angle}° = ${n}`;
-      outcome = measurement(n, 'sum');
-      break;
-    case 'exteriorToSide': {
-      const P = n * l;
-      given = `${TEXT.exterior(angle)} y ${TEXT.perimeter(P)}`;
-      ask = TEXT.ask.side;
-      hint = TEXT.hint.fromTurn;
-      first = `n = 360°/${angle}° = ${n}`;
-      outcome = {
-        hint,
-        answer: String(l),
-        wrong: [String(P), exact(P, n - 1), exact(P, n + 1)],
-        unit: TEXT.length,
-        explain: `l = P/n = ${P}/${n} = ${l} cm`,
-      };
-      break;
+    switch (kind) {
+      case 'sumToVertex':
+        given = TEXT.sum(sum);
+        ask = TEXT.ask.vertex;
+        hint = TEXT.hint.fromSum;
+        first = `n = ${sum}°/180° + 2 = ${n}`;
+        outcome = measurement(n, 'vertex');
+        break;
+      case 'interiorToDiagonals':
+      case 'interiorToPerimeter':
+        given =
+          kind === 'interiorToDiagonals'
+            ? TEXT.interior(inner)
+            : `${TEXT.interior(inner)} ${TEXT.and} ${TEXT.side(l)}`;
+        ask = kind === 'interiorToDiagonals' ? TEXT.ask.diagonals : TEXT.ask.perimeter;
+        hint = TEXT.hint.fromInterior;
+        first = `n = 360°/(180° − ${inner}°) = ${n}`;
+        outcome = kind === 'interiorToDiagonals' ? measurement(n, 'diagonals') : perimeter(n, l);
+        break;
+      case 'diagonalsToInterior':
+      case 'diagonalsToPerimeter':
+        given =
+          kind === 'diagonalsToInterior'
+            ? TEXT.diagonals(D)
+            : `${TEXT.diagonals(D)} ${TEXT.and} ${TEXT.side(l)}`;
+        ask = kind === 'diagonalsToInterior' ? TEXT.ask.interior : TEXT.ask.perimeter;
+        hint = TEXT.hint.fromDiagonals;
+        first = `n(n − 3)/2 = ${D}\nn = (3 + √(9 + 8·${D}))/2 = ${n}`;
+        outcome = kind === 'diagonalsToInterior' ? measurement(n, 'interior') : perimeter(n, l);
+        break;
+      case 'centralToSum':
+        given = TEXT.central(angle);
+        ask = TEXT.ask.sum;
+        hint = TEXT.hint.fromTurn;
+        first = `n = 360°/${angle}° = ${n}`;
+        outcome = measurement(n, 'sum');
+        break;
+      case 'exteriorToSide': {
+        const P = n * l;
+        given = `${TEXT.exterior(angle)} ${TEXT.and} ${TEXT.perimeter(P)}`;
+        ask = TEXT.ask.side;
+        hint = TEXT.hint.fromTurn;
+        first = `n = 360°/${angle}° = ${n}`;
+        outcome = {
+          hint,
+          answer: String(l),
+          wrong: [String(P), exact(P, n - 1), exact(P, n + 1)],
+          unit: TEXT.length,
+          explain: `l = P/n = ${P}/${n} = ${l} cm`,
+        };
+        break;
+      }
     }
+
+    return {
+      n,
+      exercise: {
+        ...outcome,
+        text: TEXT.mystery(given, ask),
+        hint,
+        mark: 'none',
+        explain: `${first}\n${outcome.explain}`,
+      },
+    };
   }
 
-  return {
-    n,
-    exercise: {
-      ...outcome,
-      text: TEXT.mystery(given, ask),
-      hint,
-      mark: 'none',
-      explain: `${first}\n${outcome.explain}`,
-    },
-  };
-}
+  function namedExercise(n: number): Exercise {
+    const geometry = n === 3 ? triangle : n === 4 ? square : n === 6 ? hexagon : trig;
+    const l = pick(
+      freshLengths.filter(
+        (length) => !(n === 4 && length === 4) && !(n === 6 && [8, 18].includes(length)),
+      ),
+    );
+    return pick([
+      namedMeasurement,
+      namedMeasurement,
+      namedPerimeter,
+      areaFromPerimeter,
+      geometry,
+      geometry,
+      geometry,
+    ])(n, l);
+  }
 
-function namedExercise(n: number): Exercise {
-  const geometry = n === 3 ? triangle : n === 4 ? square : n === 6 ? hexagon : trig;
-  const l = pick(
-    freshLengths.filter(
-      (length) => !(n === 4 && length === 4) && !(n === 6 && [8, 18].includes(length)),
-    ),
-  );
-  return pick([
-    namedMeasurement,
-    namedMeasurement,
-    namedPerimeter,
-    areaFromPerimeter,
-    geometry,
-    geometry,
-    geometry,
-  ])(n, l);
-}
-
-export function makeQuestion(landedSides: number): Question {
   const mystery = rand(1, 3) === 1 ? mysteryFor(landedSides) : undefined;
   const n = mystery?.n ?? landedSides;
   const exercise = mystery?.exercise ?? namedExercise(n);
   const { answer, text, hint, explain, mark = 'none', unit = '' } = exercise;
   const wrong = [...new Set(exercise.wrong.filter((value) => value !== answer))];
-  const options = shuffle([answer, ...shuffle(wrong).slice(0, 3)]);
+  const options = shuffle([answer, ...shuffle(wrong, random).slice(0, 3)], random);
   return {
     text,
     hint,
@@ -612,6 +723,22 @@ export function makeQuestion(landedSides: number): Question {
     options: options.map((value) => `${value}${unit}`),
     correct: options.indexOf(answer),
     explanation: explain,
-    ...(mystery && { mystery: true }),
+    ...(mystery && { mystery: true as const }),
   };
+}
+
+export function makeQuestion(landedSides: number): Question {
+  const draws: number[] = [];
+  const spanish = polygonQuestion(landedSides, spanishText, () => {
+    const draw = Math.random();
+    draws.push(draw);
+    return draw;
+  });
+  let index = 0;
+  const { text, hint, options, explanation } = polygonQuestion(
+    landedSides,
+    englishText,
+    () => draws[index++],
+  );
+  return { ...spanish, english: { text, hint, options, explanation } };
 }

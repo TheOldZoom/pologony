@@ -39,10 +39,23 @@ export default function Polygon({
   label?: boolean;
 }) {
   const rotation = -Math.PI / 2 + (n % 2 === 0 ? Math.PI / n : 0);
-  const vertices = Array.from({ length: n }, (_, i) => {
+  const points = Array.from({ length: n }, (_, i) => {
     const angle = rotation + (2 * i * Math.PI) / n;
-    return { x: 50 + 44 * Math.cos(angle), y: 50 + 44 * Math.sin(angle) };
+    return { x: Math.cos(angle), y: Math.sin(angle) };
   });
+  const xs = points.map(({ x }) => x);
+  const ys = points.map(({ y }) => y);
+  const left = Math.min(...xs);
+  const right = Math.max(...xs);
+  const top = Math.min(...ys);
+  const bottom = Math.max(...ys);
+  const scale = 88 / Math.max(right - left, bottom - top);
+  const centerX = 50 - ((left + right) * scale) / 2;
+  const centerY = 50 - ((top + bottom) * scale) / 2;
+  const vertices = points.map(({ x, y }) => ({
+    x: centerX + x * scale,
+    y: centerY + y * scale,
+  }));
   const first = vertices[0];
   const second = vertices[1];
   const diagonals =
@@ -71,8 +84,8 @@ export default function Polygon({
       {showApothem && (
         <line
           className="polygon-mark"
-          x1="50"
-          y1="50"
+          x1={centerX}
+          y1={centerY}
           x2={(first.x + second.x) / 2}
           y2={(first.y + second.y) / 2}
         />
@@ -80,13 +93,15 @@ export default function Polygon({
       {showRadius && (
         <line
           className={mark === 'both' ? 'polygon-mark radius-mark' : 'polygon-mark'}
-          x1="50"
-          y1="50"
+          x1={centerX}
+          y1={centerY}
           x2={first.x}
           y2={first.y}
         />
       )}
-      {(showApothem || showRadius) && <circle className="polygon-mark" cx="50" cy="50" r="2" />}
+      {(showApothem || showRadius) && (
+        <circle className="polygon-mark" cx={centerX} cy={centerY} r="2" />
+      )}
       {label && (
         <text
           className={ownerColor ? 'owned-number' : undefined}

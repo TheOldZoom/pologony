@@ -1,28 +1,47 @@
 import {
   AVATAR_IDS,
-  BUY_SECONDS,
-  GAME_MINUTES,
-  QUESTION_SECONDS,
-  ROLL_SECONDS,
+  DEFAULT_SETTINGS,
   TILES,
+  netWorth,
+  type AnswerResult,
   type AvatarId,
   type GameEvent,
   type Player,
   type PublicQuestion,
   type PublicState,
+  type QuestionSolution,
+  type RoomMode,
+  type Topic,
 } from '../shared/game';
-import type { Question } from './questions';
+import { makeQuestion, type Question } from './questions';
+import { drawTopicQuestion } from './topicQuestions';
 
-type PrivateQuestion = Question & Pick<PublicQuestion, 'kind' | 'tile'>;
-export type Room = Omit<PublicState, 'now' | 'question'> & {
+type PrivateQuestion = Question & Pick<PublicQuestion, 'kind' | 'tile'> & { chessStepAt?: number };
+export type Room = Omit<PublicState, 'now' | 'question' | 'matchReview'> & {
   question?: PrivateQuestion;
   warnedOneMinute?: boolean;
+  questionDeck: number[];
+  answers: AnswerResult[];
+  recap?: { topic: Topic; questions: QuestionSolution[] };
 };
 
 const COLORS = ['#b3243c', '#076a50', '#5534bb', '#8a5100', '#155e9e', '#a12878'];
 
-export function newRoom(code: string, hostId: string): Room {
-  return { code, phase: 'lobby', hostId, players: [], turn: 0, owners: {}, events: [] };
+export function newRoom(code: string, hostId: string, mode: RoomMode): Room {
+  return {
+    code,
+    phase: 'lobby',
+    version: 0,
+    hostId,
+    mode,
+    settings: { ...DEFAULT_SETTINGS },
+    players: [],
+    turn: 0,
+    owners: {},
+    events: [],
+    questionDeck: [],
+    answers: [],
+  };
 }
 
 export function addPlayer(room: Room, id: string, name: string, bot = false): Room {
@@ -32,7 +51,7 @@ export function addPlayer(room: Room, id: string, name: string, bot = false): Ro
     id,
     name,
     avatar,
-    color: COLORS[room.players.length],
+    color: COLORS.find((color) => !room.players.some((seat) => seat.color === color))!,
     pos: 0,
     cash: 1500,
     connected: true,
@@ -57,14 +76,59 @@ export function setConnected(room: Room, id: string, connected: boolean): Room {
   return addEvent({ ...room, players }, { kind: connected ? 'back' : 'left', player: id });
 }
 
-export function publicState(room: Room, now: number): PublicState {
-  const { question, warnedOneMinute, ...state } = room;
-  if (!question) return { ...state, now };
-  const { kind, tile, text, hint, options, n, mark, mystery } = question;
+export function currentChoices(question: PrivateQuestion) {
+  return question.chessStepAt === undefined ? question : question.chessLine!;
+}
+
+export function publicState(room: Room, now: number, viewer?: string): PublicState {
+  const { question, warnedOneMinute, questionDeck, answers, recap, result, ...state } = room;
+  if (!question) {
+    return {
+      ...state,
+      now,
+      ...(!recap && result && { result }),
+      ...(recap && {
+        matchReview: {
+          topic: recap.topic,
+          answers: viewer ? answers.filter((answer) => answer.playerId === viewer) : [],
+          recap: recap.questions,
+        },
+      }),
+    };
+  }
+  const { kind, tile, text, hint, n, mark, mystery, chess, chessLine, chessStepAt, english } =
+    question;
+  const { options } = currentChoices(question);
   return {
     ...state,
     now,
-    question: { kind, tile, text, hint, options, mark, ...(mystery ? {} : { n }) },
+    ...(result && { result }),
+    question: {
+      kind,
+      tile,
+      text,
+      hint,
+      options,
+      english: {
+        text: english.text,
+        hint: english.hint,
+        options: chessStepAt === undefined ? english.options : options,
+      },
+      mark,
+      ...(mystery || n === undefined ? {} : { n }),
+      ...(chess && {
+        chess: chessLine
+          ? chessStepAt === undefined
+            ? { ...chess, step: 1 }
+            : {
+                ...chess,
+                position: chessLine.position,
+                step: 2,
+                lastReply: chessLine.reply,
+              }
+          : chess,
+      }),
+    },
   };
 }
 
@@ -100,13 +164,14 @@ function pay(room: Room, charge: number, owner?: string): Room {
   };
 }
 
-function nextTurn(room: Room, now: number): Room {
+function nextTurn(room: Room, now: number, turn = (room.turn + 1) % room.players.length): Room {
   return {
     ...room,
-    turn: (room.turn + 1) % room.players.length,
+    turn,
     phase: 'roll',
+    version: room.version + 1,
     question: undefined,
-    deadline: now + ROLL_SECONDS * 1000,
+    deadline: now + room.settings.rollSeconds * 1000,
   };
 }
 
@@ -115,27 +180,69 @@ export function start(room: Room, now: number): Room {
     {
       ...room,
       phase: 'roll',
-      deadline: now + ROLL_SECONDS * 1000,
-      endsAt: now + GAME_MINUTES * 60_000,
+      version: room.version + 1,
+      deadline: now + room.settings.rollSeconds * 1000,
+      endsAt: now + room.settings.matchMinutes * 60_000,
+      answers: [],
+      recap: undefined,
     },
     { kind: 'started' },
   );
 }
 
 export function finish(room: Room): Room {
+  const standings = room.players
+    .map((player) => ({ player, worth: netWorth(player, room.owners) }))
+    .sort((a, b) => b.worth - a.worth);
+  const questions: QuestionSolution[] = [];
+  const seen = new Set<string>();
+  const newest = room.answers.slice().reverse();
+  for (const { playerId, chosen, outcome, chessFollowup, ...solution } of [
+    ...newest.filter((answer) => answer.outcome !== 'correct'),
+    ...newest.filter((answer) => answer.outcome === 'correct'),
+  ]) {
+    const key = solution.chess?.position ?? solution.text;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    questions.push(solution);
+    if (questions.length === 3) break;
+  }
   return addEvent(
-    { ...room, phase: 'over', question: undefined, deadline: undefined },
+    {
+      ...room,
+      phase: 'over',
+      version: room.version + 1,
+      question: undefined,
+      deadline: undefined,
+      standings,
+      recap: { topic: room.settings.topic, questions },
+    },
     { kind: 'over' },
   );
 }
 
-export function roll(
-  room: Room,
-  now: number,
-  dice: [number, number],
-  chanceSides: number,
-  questionFor: (n: number) => Question,
-): Room {
+export function rematch(room: Room): Room {
+  const lobby = newRoom(room.code, room.hostId, room.mode);
+  const reset = addEvent(
+    {
+      ...lobby,
+      settings: room.settings,
+      version: room.version + 1,
+      players: room.players.map((player) => ({
+        ...player,
+        cash: 1500,
+        pos: 0,
+      })),
+      answers: room.answers,
+      recap: room.recap,
+      events: room.events.slice(-1),
+    },
+    { kind: 'rematch' },
+  );
+  return { ...reset, events: reset.events.slice(-1) };
+}
+
+export function roll(room: Room, now: number, dice: [number, number], chanceSides: number): Room {
   const player = room.players[room.turn];
   const distance = player.pos + dice[0] + dice[1];
   const tileIndex = distance % TILES.length;
@@ -157,7 +264,11 @@ export function roll(
   if (tile.kind === 'tax') {
     const paid = Math.min(cash, 100);
     return nextTurn(
-      addEvent(pay(moved, 100), { kind: 'tax', player: player.id, amount: paid }),
+      addEvent(pay(moved, 100), {
+        kind: 'tax',
+        player: player.id,
+        amount: paid,
+      }),
       now,
     );
   }
@@ -171,19 +282,32 @@ export function roll(
     if (owner === player.id) return nextTurn(moved, now);
     if (!owner && cash < tile.price!) {
       return nextTurn(
-        addEvent(moved, { kind: 'cantAfford', player: player.id, tile: tileIndex }),
+        addEvent(moved, {
+          kind: 'cantAfford',
+          player: player.id,
+          tile: tileIndex,
+        }),
         now,
       );
     }
     kind = owner ? 'rent' : 'buy';
   }
-  const question = questionFor(tile.n ?? chanceSides);
+  const topic = room.settings.topic;
+  const { question, deck } =
+    topic === 'polygons'
+      ? {
+          question: makeQuestion(tile.n ?? chanceSides),
+          deck: room.questionDeck,
+        }
+      : drawTopicQuestion(topic, room.questionDeck);
   return addEvent(
     {
       ...moved,
       phase: 'question',
-      deadline: now + QUESTION_SECONDS * 1000,
+      version: room.version + 1,
+      deadline: now + room.settings.questionSeconds * 1000,
       question: { ...question, kind, tile: tileIndex },
+      questionDeck: deck,
     },
     {
       kind: 'question',
@@ -198,29 +322,62 @@ export function roll(
 export function answer(room: Room, now: number, index?: number): Room {
   const player = room.players[room.turn];
   const question = room.question!;
-  const correct = index === question.correct;
-  const { text, options, n, mark, explanation } = question;
+  const { text, options, n, mark, explanation, chess, english, chessLine, chessStepAt } = question;
+  const choices = currentChoices(question);
+  const correct = index === choices.correct;
+  if (chessLine && chessStepAt === undefined && correct) {
+    return {
+      ...room,
+      version: room.version + 1,
+      question: { ...question, chessStepAt: now },
+    };
+  }
+  const result: AnswerResult = {
+    id: (room.result?.id ?? 0) + 1,
+    playerId: player.id,
+    text,
+    options,
+    n,
+    mark,
+    ...(chess && { chess }),
+    ...(chessLine && {
+      chessLine: [options[question.correct], chessLine.reply, chessLine.options[chessLine.correct]],
+    }),
+    ...(chessStepAt !== undefined &&
+      index !== undefined && { chessFollowup: choices.options[index] }),
+    explanation,
+    english: {
+      text: english.text,
+      options: english.options,
+      explanation: english.explanation,
+    },
+    chosen: chessStepAt === undefined ? (index ?? -1) : question.correct,
+    correct: question.correct,
+    outcome: index === undefined ? 'timeout' : correct ? 'correct' : 'incorrect',
+  };
   const answered = addEvent(
     {
       ...room,
-      result: {
-        id: (room.result?.id ?? 0) + 1,
-        playerId: player.id,
-        text,
-        options,
-        n,
-        mark,
-        explanation,
-        chosen: index ?? -1,
-        correct: question.correct,
-      },
+      result,
+      answers: [...room.answers, result],
     },
-    { kind: 'answer', player: player.id, correct, timeout: index === undefined },
+    {
+      kind: 'answer',
+      player: player.id,
+      correct,
+      timeout: index === undefined,
+    },
   );
 
   if (question.kind === 'buy') {
     return correct
-      ? { ...answered, phase: 'buy', question: undefined, deadline: now + BUY_SECONDS * 1000 }
+      ? {
+          ...answered,
+          phase: 'buy',
+          version: room.version + 1,
+          question: undefined,
+          deadline: now + room.settings.buySeconds * 1000,
+        }
       : nextTurn(answered, now);
   }
   if (question.kind === 'chance') {
@@ -253,9 +410,17 @@ export function answer(room: Room, now: number, index?: number): Room {
 export function buy(room: Room, now: number): Room {
   const player = room.players[room.turn];
   const tile = TILES[player.pos];
-  const bought = { ...pay(room, tile.price!), owners: { ...room.owners, [player.pos]: player.id } };
+  const bought = {
+    ...pay(room, tile.price!),
+    owners: { ...room.owners, [player.pos]: player.id },
+  };
   return nextTurn(
-    addEvent(bought, { kind: 'buy', player: player.id, tile: player.pos, amount: tile.price! }),
+    addEvent(bought, {
+      kind: 'buy',
+      player: player.id,
+      tile: player.pos,
+      amount: tile.price!,
+    }),
     now,
   );
 }
@@ -263,4 +428,41 @@ export function buy(room: Room, now: number): Room {
 export function skip(room: Room, now: number): Room {
   const player = room.players[room.turn];
   return nextTurn(addEvent(room, { kind: 'skip', player: player.id, tile: player.pos }), now);
+}
+
+export function skipTurn(room: Room, now: number): Room {
+  return nextTurn(addEvent(room, { kind: 'turnSkipped', player: room.players[room.turn].id }), now);
+}
+
+export function removePlayer(room: Room, id: string, now: number, reason?: 'voluntary'): Room {
+  const removed = room.players.findIndex((player) => player.id === id);
+  if (removed < 0) return room;
+  const active = room.players[room.turn];
+  const players = room.players.filter((player) => player.id !== id);
+  const owners = Object.fromEntries(
+    Object.entries(room.owners).filter(([, owner]) => owner !== id),
+  );
+  const hostId =
+    room.mode === 'friends' && room.hostId === id
+      ? ((players.find((player) => player.connected) ?? players[0])?.id ?? '')
+      : room.hostId;
+  const updated = addEvent(
+    {
+      ...room,
+      players,
+      owners,
+      hostId,
+      turn: Math.max(
+        0,
+        players.findIndex((p) => p.id === active?.id),
+      ),
+    },
+    { kind: 'removed', player: id, name: room.players[removed].name, reason },
+  );
+  if (room.phase === 'lobby' || room.phase === 'over') return updated;
+  if (players.length < 2) return finish(updated);
+  if (active.id === id) return nextTurn(updated, now, removed % players.length);
+  if (room.question?.kind === 'rent' && room.owners[room.question.tile] === id)
+    return skipTurn(updated, now);
+  return updated;
 }
