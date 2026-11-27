@@ -294,6 +294,13 @@
   color: var(--muted);
   font-size: 0.8rem;
 }
+.topic-option-custom {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+}
 .lineup-heading > span {
   font-variant-numeric: tabular-nums;
 }
@@ -713,7 +720,7 @@
   .app:not(.presenter) .buying-turn .dock {
     display: contents;
   }
-  .app:not(.presenter) .buying-turn .player-chips {
+  .app:not(.presenter) .buying-turn .scoreboard-slot {
     order: 3;
     width: var(--game-rail);
     margin-top: auto;
@@ -1047,7 +1054,7 @@
     width: 100%;
     justify-items: start;
   }
-  .game-feedback .solution-space {
+  .dock-result {
     display: none;
   }
   .info-dialog {

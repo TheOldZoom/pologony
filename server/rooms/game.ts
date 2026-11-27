@@ -1,146 +1,31 @@
 import {
-  AVATAR_IDS,
-  DEFAULT_SETTINGS,
+  HINT_PRICE,
+  STREAK_BONUS,
   TILES,
   netWorth,
+  tileRent,
   type AnswerResult,
-  type AvatarId,
-  type GameEvent,
-  type Player,
   type PublicQuestion,
-  type PublicState,
   type QuestionSolution,
-  type RoomMode,
-  type Topic,
-} from '../shared/game';
-import { makeQuestion, type Question } from './questions';
-import { drawTopicQuestion } from './topicQuestions';
+} from '../../shared/game';
+import type { DailyPuzzles } from '../chess/cache';
+import { addEvent, correctOption, currentChoices, newRoom, type Room } from './model';
+import { askQuestion } from './questionTurns';
 
-type PrivateQuestion = Question & Pick<PublicQuestion, 'kind' | 'tile'> & { chessStepAt?: number };
-export type Room = Omit<PublicState, 'now' | 'question' | 'matchReview'> & {
-  question?: PrivateQuestion;
-  warnedOneMinute?: boolean;
-  questionDeck: number[];
-  answers: AnswerResult[];
-  recap?: { topic: Topic; questions: QuestionSolution[] };
-};
-
-const COLORS = ['#b3243c', '#076a50', '#5534bb', '#8a5100', '#155e9e', '#a12878'];
-
-export function newRoom(code: string, hostId: string, mode: RoomMode): Room {
-  return {
-    code,
-    phase: 'lobby',
-    version: 0,
-    hostId,
-    mode,
-    settings: { ...DEFAULT_SETTINGS },
-    players: [],
-    turn: 0,
-    owners: {},
-    events: [],
-    questionDeck: [],
-    answers: [],
-  };
-}
-
-export function addPlayer(room: Room, id: string, name: string, bot = false): Room {
-  const unused = (avatar: AvatarId) => !room.players.some((player) => player.avatar === avatar);
-  const avatar = bot && unused('bot') ? 'bot' : AVATAR_IDS.find(unused)!;
-  const player: Player = {
-    id,
-    name,
-    avatar,
-    color: COLORS.find((color) => !room.players.some((seat) => seat.color === color))!,
-    pos: 0,
-    cash: 1500,
-    connected: true,
-    ...(bot && { bot: true }),
-  };
-  return addEvent({ ...room, players: [...room.players, player] }, { kind: 'joined', player: id });
-}
-
-export function setAvatar(room: Room, id: string, avatar: AvatarId): Room {
-  return {
-    ...room,
-    players: room.players.map((player) => (player.id === id ? { ...player, avatar } : player)),
-  };
-}
-
-export function setConnected(room: Room, id: string, connected: boolean): Room {
-  const player = room.players.find((candidate) => candidate.id === id);
-  if (!player || player.connected === connected) return room;
-  const players = room.players.map((candidate) =>
-    candidate.id === id ? { ...candidate, connected } : candidate,
-  );
-  return addEvent({ ...room, players }, { kind: connected ? 'back' : 'left', player: id });
-}
-
-export function currentChoices(question: PrivateQuestion) {
-  return question.chessStepAt === undefined ? question : question.chessLine!;
-}
-
-export function publicState(room: Room, now: number, viewer?: string): PublicState {
-  const { question, warnedOneMinute, questionDeck, answers, recap, result, ...state } = room;
-  if (!question) {
-    return {
-      ...state,
-      now,
-      ...(!recap && result && { result }),
-      ...(recap && {
-        matchReview: {
-          topic: recap.topic,
-          answers: viewer ? answers.filter((answer) => answer.playerId === viewer) : [],
-          recap: recap.questions,
-        },
-      }),
-    };
-  }
-  const { kind, tile, text, hint, n, mark, mystery, chess, chessLine, chessStepAt, english } =
-    question;
-  const { options } = currentChoices(question);
-  return {
-    ...state,
-    now,
-    ...(result && { result }),
-    question: {
-      kind,
-      tile,
-      text,
-      hint,
-      options,
-      english: {
-        text: english.text,
-        hint: english.hint,
-        options: chessStepAt === undefined ? english.options : options,
-      },
-      mark,
-      ...(mystery || n === undefined ? {} : { n }),
-      ...(chess && {
-        chess: chessLine
-          ? chessStepAt === undefined
-            ? { ...chess, step: 1 }
-            : {
-                ...chess,
-                position: chessLine.position,
-                step: 2,
-                lastReply: chessLine.reply,
-              }
-          : chess,
-      }),
-    },
-  };
-}
-
-type WithoutEventId<Event> = Event extends { id: number } ? Omit<Event, 'id'> : never;
-
-function addEvent(room: Room, event: WithoutEventId<GameEvent>): Room {
-  const id = (room.events.at(-1)?.id ?? 0) + 1;
-  return { ...room, events: [...room.events, { ...event, id }].slice(-30) };
+export function buyHint(room: Room): Room {
+  if (
+    !room.question ||
+    room.question.hintBought ||
+    (!room.question.hint && !room.question.english.hint)
+  )
+    return room;
+  if (room.players[room.turn].cash < HINT_PRICE) return room;
+  return { ...pay(room, HINT_PRICE), question: { ...room.question, hintBought: true } };
 }
 
 export function warnOneMinute(room: Room, now: number): Room {
   if (
+    room.pausedAt !== undefined ||
     room.warnedOneMinute ||
     room.phase === 'over' ||
     room.endsAt === undefined ||
@@ -164,7 +49,7 @@ function pay(room: Room, charge: number, owner?: string): Room {
   };
 }
 
-function nextTurn(room: Room, now: number, turn = (room.turn + 1) % room.players.length): Room {
+function openRoll(room: Room, now: number, turn: number): Room {
   return {
     ...room,
     turn,
@@ -175,7 +60,45 @@ function nextTurn(room: Room, now: number, turn = (room.turn + 1) % room.players
   };
 }
 
-export function start(room: Room, now: number): Room {
+function nextTurn(room: Room, now: number, turn = (room.turn + 1) % room.players.length): Room {
+  for (let i = 0; i < room.players.length && room.players[turn].eliminated; i++)
+    turn = (turn + 1) % room.players.length;
+  const player = room.players[turn];
+  if (!player || player.eliminated) return finish(room);
+  return player.resting
+    ? askQuestion({ ...room, turn }, now, 'rest', player.pos, 6)
+    : openRoll(room, now, turn);
+}
+
+function settleDebt(room: Room, charge: number, now: number, owner?: string): Room {
+  const payer = room.players[room.turn];
+  const paid = pay(room, charge, owner);
+  if (!room.settings.bankruptcy || payer.cash >= charge) return nextTurn(paid, now);
+  const owners = { ...paid.owners };
+  const upgrades = { ...paid.upgrades };
+  for (const tile of Object.keys(owners).map(Number)) {
+    if (owners[tile] !== payer.id) continue;
+    if (owner) owners[tile] = owner;
+    else {
+      delete owners[tile];
+      delete upgrades[tile];
+    }
+  }
+  const players = paid.players.map((player) =>
+    player.id === payer.id
+      ? { ...player, eliminated: true as const, resting: undefined, streak: undefined }
+      : player,
+  );
+  const settled = addEvent(
+    { ...paid, players, owners, upgrades },
+    { kind: 'bankrupt', player: payer.id, to: owner },
+  );
+  return players.filter((player) => !player.eliminated).length < 2
+    ? finish(settled)
+    : nextTurn(settled, now);
+}
+
+export function start(room: Room, now: number, chessDaily?: DailyPuzzles): Room {
   return addEvent(
     {
       ...room,
@@ -185,6 +108,7 @@ export function start(room: Room, now: number): Room {
       endsAt: now + room.settings.matchMinutes * 60_000,
       answers: [],
       recap: undefined,
+      chessDaily: room.settings.topic === 'chess' && !room.customDeck ? chessDaily : undefined,
     },
     { kind: 'started' },
   );
@@ -192,12 +116,13 @@ export function start(room: Room, now: number): Room {
 
 export function finish(room: Room): Room {
   const standings = room.players
+    .filter((player) => !player.eliminated)
     .map((player) => ({ player, worth: netWorth(player, room.owners) }))
     .sort((a, b) => b.worth - a.worth);
   const questions: QuestionSolution[] = [];
   const seen = new Set<string>();
   const newest = room.answers.slice().reverse();
-  for (const { playerId, chosen, outcome, chessFollowup, ...solution } of [
+  for (const { playerId, chosen, outcome, chessFollowup, chessAttempt, ...solution } of [
     ...newest.filter((answer) => answer.outcome !== 'correct'),
     ...newest.filter((answer) => answer.outcome === 'correct'),
   ]) {
@@ -215,6 +140,8 @@ export function finish(room: Room): Room {
       question: undefined,
       deadline: undefined,
       standings,
+      pausedAt: undefined,
+      pauseVote: undefined,
       recap: { topic: room.settings.topic, questions },
     },
     { kind: 'over' },
@@ -232,7 +159,12 @@ export function rematch(room: Room): Room {
         ...player,
         cash: 1500,
         pos: 0,
+        eliminated: undefined,
+        resting: undefined,
+        streak: undefined,
       })),
+      customDeck: room.customDeck,
+      spectators: room.spectators,
       answers: room.answers,
       recap: room.recap,
       events: room.events.slice(-1),
@@ -262,24 +194,38 @@ export function roll(room: Room, now: number, dice: [number, number], chanceSide
   if (passed) moved = addEvent(moved, { kind: 'lap', player: player.id, amount: 200 });
 
   if (tile.kind === 'tax') {
-    const paid = Math.min(cash, 100);
-    return nextTurn(
-      addEvent(pay(moved, 100), {
-        kind: 'tax',
-        player: player.id,
-        amount: paid,
-      }),
+    return settleDebt(
+      addEvent(moved, { kind: 'tax', player: player.id, amount: Math.min(cash, 100) }),
+      100,
       now,
     );
   }
-  if (tile.kind === 'rest')
+  if (tile.kind === 'rest') {
+    if (room.settings.restChallenges)
+      moved = {
+        ...moved,
+        players: moved.players.map((seat) =>
+          seat.id === player.id ? { ...seat, resting: true } : seat,
+        ),
+      };
     return nextTurn(addEvent(moved, { kind: 'rest', player: player.id }), now);
+  }
   if (tile.kind === 'start') return nextTurn(moved, now);
 
   let kind: PublicQuestion['kind'] = 'chance';
   if (tile.kind === 'property') {
     const owner = room.owners[tileIndex];
-    if (owner === player.id) return nextTurn(moved, now);
+    if (owner === player.id) {
+      const upgradeTier = room.settings.difficulty === 'hard' ? 'challenge' : 'hard';
+      if (
+        room.settings.upgrades &&
+        !room.upgrades?.[tileIndex] &&
+        (!room.customDeck ||
+          room.customDeck.some((question) => question.difficulty === upgradeTier))
+      )
+        return askQuestion(moved, now, 'upgrade', tileIndex, chanceSides);
+      return nextTurn(moved, now);
+    }
     if (!owner && cash < tile.price!) {
       return nextTurn(
         addEvent(moved, {
@@ -292,31 +238,7 @@ export function roll(room: Room, now: number, dice: [number, number], chanceSide
     }
     kind = owner ? 'rent' : 'buy';
   }
-  const topic = room.settings.topic;
-  const { question, deck } =
-    topic === 'polygons'
-      ? {
-          question: makeQuestion(tile.n ?? chanceSides),
-          deck: room.questionDeck,
-        }
-      : drawTopicQuestion(topic, room.questionDeck);
-  return addEvent(
-    {
-      ...moved,
-      phase: 'question',
-      version: room.version + 1,
-      deadline: now + room.settings.questionSeconds * 1000,
-      question: { ...question, kind, tile: tileIndex },
-      questionDeck: deck,
-    },
-    {
-      kind: 'question',
-      player: player.id,
-      tile: tileIndex,
-      q: kind,
-      ...(question.mystery && { mystery: true }),
-    },
-  );
+  return askQuestion(moved, now, kind, tileIndex, chanceSides);
 }
 
 export function answer(room: Room, now: number, index?: number): Room {
@@ -324,14 +246,23 @@ export function answer(room: Room, now: number, index?: number): Room {
   const question = room.question!;
   const { text, options, n, mark, explanation, chess, english, chessLine, chessStepAt } = question;
   const choices = currentChoices(question);
-  const correct = index === choices.correct;
-  if (chessLine && chessStepAt === undefined && correct) {
+  const correct = correctOption(question, index);
+  const stepIndex = question.stepIndex ?? 0;
+  const stages = question.chessStages;
+  if (
+    correct &&
+    (stages ? stepIndex + 1 < stages.length : chessLine && chessStepAt === undefined)
+  ) {
     return {
       ...room,
       version: room.version + 1,
-      question: { ...question, chessStepAt: now },
+      question: { ...question, chessStepAt: now, stepIndex: stepIndex + 1 },
     };
   }
+  const chessAttempt = stages
+    ?.slice(0, stepIndex)
+    .flatMap((stage, i) => [stage.options[stage.correct], stages[i + 1].reply!]);
+  if (chessAttempt && index !== undefined) chessAttempt.push(choices.options[index]);
   const result: AnswerResult = {
     id: (room.result?.id ?? 0) + 1,
     playerId: player.id,
@@ -340,6 +271,14 @@ export function answer(room: Room, now: number, index?: number): Room {
     n,
     mark,
     ...(chess && { chess }),
+    ...(question.lichessId && { lichessId: question.lichessId }),
+    ...(stages && {
+      chessLine: stages.flatMap((stage) => [
+        ...(stage.reply ? [stage.reply] : []),
+        stage.options[stage.correct],
+      ]),
+      chessAttempt,
+    }),
     ...(chessLine && {
       chessLine: [options[question.correct], chessLine.reply, chessLine.options[chessLine.correct]],
     }),
@@ -355,7 +294,7 @@ export function answer(room: Room, now: number, index?: number): Room {
     correct: question.correct,
     outcome: index === undefined ? 'timeout' : correct ? 'correct' : 'incorrect',
   };
-  const answered = addEvent(
+  let answered = addEvent(
     {
       ...room,
       result,
@@ -369,6 +308,35 @@ export function answer(room: Room, now: number, index?: number): Room {
     },
   );
 
+  const streak = correct ? (player.streak ?? 0) + 1 : 0;
+  const bonus = streak === 3 ? STREAK_BONUS : 0;
+  answered = {
+    ...answered,
+    players: answered.players.map((seat) =>
+      seat.id === player.id
+        ? { ...seat, streak: bonus ? 0 : streak, cash: seat.cash + bonus }
+        : seat,
+    ),
+  };
+  if (bonus) answered = addEvent(answered, { kind: 'streak', player: player.id, amount: bonus });
+
+  if (question.kind === 'rest') {
+    answered = {
+      ...answered,
+      players: answered.players.map((seat) =>
+        seat.id === player.id ? { ...seat, resting: undefined } : seat,
+      ),
+    };
+    return correct ? openRoll(answered, now, room.turn) : nextTurn(answered, now);
+  }
+  if (question.kind === 'upgrade') {
+    if (correct)
+      answered = addEvent(
+        { ...answered, upgrades: { ...answered.upgrades, [question.tile]: true } },
+        { kind: 'upgraded', player: player.id, tile: question.tile },
+      );
+    return nextTurn(answered, now);
+  }
   if (question.kind === 'buy') {
     return correct
       ? {
@@ -381,29 +349,31 @@ export function answer(room: Room, now: number, index?: number): Room {
       : nextTurn(answered, now);
   }
   if (question.kind === 'chance') {
-    const cash = correct ? player.cash + 100 : Math.max(0, player.cash - 50);
-    const players = room.players.map((p, i) => (i === room.turn ? { ...p, cash } : p));
+    const current = answered.players[room.turn].cash;
+    const cash = correct ? current + 100 : Math.max(0, current - 50);
+    const players = answered.players.map((p, i) => (i === room.turn ? { ...p, cash } : p));
     return nextTurn(
       addEvent(
         { ...answered, players },
-        { kind: 'chance', player: player.id, amount: cash - player.cash },
+        { kind: 'chance', player: player.id, amount: cash - current },
       ),
       now,
     );
   }
   const owner = room.players.find((p) => p.id === room.owners[question.tile])!;
-  const rent = TILES[question.tile].rent! / (correct ? 2 : 1);
-  const paid = Math.min(player.cash, rent);
-  return nextTurn(
-    addEvent(pay(answered, rent, owner.id), {
+  const rent = Math.round(tileRent(question.tile, room.upgrades) * (correct ? 50 : 100)) / 100;
+  return settleDebt(
+    addEvent(answered, {
       kind: 'rent',
       player: player.id,
       to: owner.id,
       tile: question.tile,
-      amount: paid,
+      amount: Math.min(answered.players[room.turn].cash, rent),
       half: correct,
     }),
+    rent,
     now,
+    owner.id,
   );
 }
 
@@ -431,7 +401,12 @@ export function skip(room: Room, now: number): Room {
 }
 
 export function skipTurn(room: Room, now: number): Room {
-  return nextTurn(addEvent(room, { kind: 'turnSkipped', player: room.players[room.turn].id }), now);
+  const player = room.players[room.turn];
+  const players =
+    room.question?.kind === 'rest'
+      ? room.players.map((seat) => (seat.id === player.id ? { ...seat, resting: undefined } : seat))
+      : room.players;
+  return nextTurn(addEvent({ ...room, players }, { kind: 'turnSkipped', player: player.id }), now);
 }
 
 export function removePlayer(room: Room, id: string, now: number, reason?: 'voluntary'): Room {
@@ -451,6 +426,9 @@ export function removePlayer(room: Room, id: string, now: number, reason?: 'volu
       ...room,
       players,
       owners,
+      upgrades: Object.fromEntries(
+        Object.entries(room.upgrades ?? {}).filter(([tile]) => owners[Number(tile)]),
+      ),
       hostId,
       turn: Math.max(
         0,
@@ -460,7 +438,7 @@ export function removePlayer(room: Room, id: string, now: number, reason?: 'volu
     { kind: 'removed', player: id, name: room.players[removed].name, reason },
   );
   if (room.phase === 'lobby' || room.phase === 'over') return updated;
-  if (players.length < 2) return finish(updated);
+  if (players.filter((player) => !player.eliminated).length < 2) return finish(updated);
   if (active.id === id) return nextTurn(updated, now, removed % players.length);
   if (room.question?.kind === 'rent' && room.owners[room.question.tile] === id)
     return skipTurn(updated, now);

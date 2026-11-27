@@ -1,4 +1,4 @@
-import type { Mark } from '../../shared/game';
+import { type Mark } from '../../../../../shared/game';
 
 const tints = [
   '#fff2ef',

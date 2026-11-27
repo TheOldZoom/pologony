@@ -12,6 +12,7 @@
     "format:check": "prettier --check ."
   },
   "dependencies": {
+    "chess.js": "^1.4.0",
     "hono": "^4.10.0",
     "lucide-react": "^1.80.0",
     "qrcode-generator": "^2.0.4",

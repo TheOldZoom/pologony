@@ -1,0 +1,336 @@
+[data-topic] {
+  --action-cut: var(--hexagon);
+  --shape-outline-content: none;
+  --action-focus-shadow: initial;
+  --action-focus-outline: initial;
+  --action-selected-shadow: initial;
+  --card-cut: var(--octagon);
+  --card-finish: none;
+  --room-finish: none;
+  --frame-radius: 8px;
+  --display-font: var(--body-font);
+  --on-accent: var(--paper);
+}
+
+[data-topic='polygons'],
+.app:has(.settings-page[data-topic='polygons']) {
+  --shape-outline-content: '';
+  --action-focus-outline: none;
+  --action-focus-shadow: none;
+  --action-selected-shadow: none;
+  --background: #111722;
+  --paper: #1c2636;
+  --ink: #f4ede0;
+  --muted: #bbc2d2;
+  --violet: #b9a6ff;
+  --lavender: #262c44;
+  --line: #39465f;
+  --tile: #253048;
+  --tile-alt: #202940;
+  --base-plate: #141c2b;
+  --watch-ribbon: #42495a;
+  --board-field:
+    linear-gradient(#b9a6ff19 1px, transparent 1px) center / 16px 16px,
+    linear-gradient(90deg, #b9a6ff19 1px, transparent 1px) center / 16px 16px;
+  --room-finish: radial-gradient(circle, #63749650 1px, transparent 1px) center / 20px 20px;
+  --card-finish: none;
+  --event-finish: var(--board-field);
+  --event-shadow: none;
+}
+
+[data-topic='chess'],
+.app:has(.settings-page[data-topic='chess']) {
+  --shape-outline-content: none;
+  --event-shadow: initial;
+  --action-focus-outline: initial;
+  --action-focus-shadow: initial;
+  --action-selected-shadow: initial;
+  --background: #1b1410;
+  --paper: #3c2920;
+  --ink: #f9edda;
+  --muted: #dec8b1;
+  --violet: #f1cf97;
+  --lavender: #50392d;
+  --line: #997051;
+  --tile: #5e3826;
+  --tile-alt: #bb946b;
+  --base-plate: #281d18;
+  --watch-ribbon: #4f382c;
+  --display-font: Georgia, serif;
+  --action-cut: none;
+  --card-cut: none;
+  --frame-radius: 6px;
+  --wood-fibers: repeating-linear-gradient(
+    3deg,
+    #33190d27 0 1px,
+    transparent 1.7px 4px,
+    #ffe0ad11 4.5px,
+    transparent 5.5px 8px,
+    #4b261516 8.6px,
+    transparent 9.4px 13px
+  );
+  --wood-grain:
+    radial-gradient(ellipse 76% 7% at 6% 23%, #2812083b, transparent 72%),
+    radial-gradient(ellipse 94% 8% at 88% 66%, #f1c28b32, transparent 76%),
+    repeating-radial-gradient(
+      ellipse 395px 61px at 14% 13%,
+      #3214081b 0% 1%,
+      transparent 2.8% 9.5%,
+      #edbd8020 10.5%,
+      transparent 12% 16.5%
+    ),
+    var(--wood-fibers);
+  --room-finish:
+    radial-gradient(ellipse at 38% 0%, #a3663028, transparent 62%),
+    linear-gradient(165deg, transparent 15%, #110b09b5), var(--wood-grain);
+  --card-finish: linear-gradient(150deg, #b479452e, #1e100e3b), var(--wood-fibers);
+  --event-finish: var(--card-finish);
+  --board-field:
+    var(--wood-grain), repeating-conic-gradient(#663d29 0 25%, #c69b72 0 50%) 0 0 / 25% 25%;
+}
+
+[data-topic='history'],
+.app:has(.settings-page[data-topic='history']) {
+  --shape-outline-content: none;
+  --event-shadow: initial;
+  --action-focus-outline: initial;
+  --action-focus-shadow: initial;
+  --action-selected-shadow: initial;
+  --background: #142a2c;
+  --paper: #234044;
+  --ink: #fff2dd;
+  --muted: #ded4c1;
+  --violet: #f0ce8c;
+  --lavender: #2a494d;
+  --line: #997846;
+  --tile: #26464a;
+  --tile-alt: #1d383b;
+  --base-plate: #172f32;
+  --watch-ribbon: #294e52;
+  --display-font: Georgia, serif;
+  --action-cut: none;
+  --card-cut: none;
+  --frame-radius: 3px;
+  --room-finish:
+    repeating-linear-gradient(45deg, #d0bb8c0d 0 1px, transparent 1px 5px),
+    repeating-linear-gradient(-45deg, #010d103b 0 1px, transparent 1px 5px);
+  --card-finish: repeating-linear-gradient(0deg, #8367480b 0 1px, transparent 1px 7px);
+  --event-finish: var(--card-finish);
+  --board-field: var(--room-finish);
+}
+
+.app {
+  background: var(--room-finish) var(--background);
+  color: var(--ink);
+}
+[data-topic]
+  :is(
+    .game-header h1,
+    .lobby-heading > strong,
+    .room-ticket h1,
+    .settings-page h1,
+    .info-heading h2
+  ) {
+  font-family: var(--display-font);
+}
+[data-topic]
+  :is(
+    .room-ticket,
+    .settings-summary,
+    .lobby-lineup,
+    .avatar-picker,
+    .landing-card,
+    .buy-offer,
+    .question-card,
+    .info-card
+  ) {
+  background: var(--card-finish) var(--paper);
+}
+[data-topic] .watch-question {
+  background-color: var(--base-plate);
+}
+[data-topic] .tile-alt {
+  background-color: var(--tile-alt);
+}
+[data-topic='chess'] .board {
+  padding: clamp(5px, 1vw, 10px);
+  border-radius: var(--frame-radius);
+  background: var(--wood-grain) #754930;
+  box-shadow:
+    0 0 0 1px #261910,
+    0 6px 18px #0805048c,
+    inset 0 0 0 1px #c98c55,
+    inset 0 0 0 3px #42291d,
+    inset 0 0 0 4px #b58657;
+}
+[data-topic='chess'] .board .tile {
+  background-image: var(--wood-fibers);
+}
+[data-topic='chess'] .board .tile-alt .topic-emblem:not([data-owned]) {
+  color: #432818;
+}
+[data-topic='chess'] .board-center {
+  box-shadow:
+    inset 0 0 0 1px #492b1d,
+    inset 0 0 0 3px #e6be8652;
+}
+[data-topic='chess'] .board .icon-chance {
+  background: #34291e;
+  color: var(--violet);
+}
+[data-topic='chess'] :is(.dock, .dock-tools) {
+  background: linear-gradient(150deg, #303b31, #252b23);
+  border-top-color: #997051;
+}
+[data-topic='chess'] .player-chip {
+  background: linear-gradient(145deg, #2c372e, #212821);
+}
+[data-topic='chess'] .action:not(.answer, .danger) {
+  background-image: linear-gradient(#ffe1a825, #28130e28), var(--wood-fibers);
+  border: 1px solid var(--line);
+  box-shadow:
+    inset 0 1px 0 #ffe1b044,
+    inset 0 -2px 0 #1b100e66;
+}
+[data-topic='chess'] .roll-button {
+  clip-path: none;
+}
+[data-topic='chess'] :is(.room-ticket, .landing-card, .question-card, .info-card) {
+  box-shadow:
+    inset 0 0 0 1px var(--line),
+    inset 0 0 0 3px #281a14;
+}
+[data-topic='chess'] .question-ribbon {
+  box-shadow: inset 0 -1px 0 #e5aa6b80;
+}
+[data-topic='chess'] .board-center .latest-log {
+  padding: 4px 7px;
+  border-radius: var(--frame-radius);
+  background-color: #231712d9;
+  color: var(--ink);
+}
+[data-topic='chess'] .board-center .roll-total {
+  width: fit-content;
+  padding: 3px 7px;
+  border-radius: var(--frame-radius);
+  background-color: #231712d9;
+}
+[data-topic='history'] .board {
+  background-color: #a68855;
+  padding: 3px;
+}
+[data-topic='history'] .board-center {
+  box-shadow:
+    inset 0 0 0 5px var(--base-plate),
+    inset 0 0 0 6px var(--line);
+}
+[data-topic='history']
+  :is(
+    .room-ticket,
+    .buy-offer,
+    .question-card,
+    .info-card,
+    .ranking,
+    .event-message,
+    .language-menu
+  ) {
+  --paper: #f5e6ca;
+  --base-plate: #eddbbd;
+  --ink: #2e261b;
+  --muted: #5e4b36;
+  --violet: #235758;
+  --lavender: #ead8b9;
+  --line: #a08a64;
+  --mint: #235758;
+  --on-accent: #fff7e7;
+  --gold: #744717;
+  --good: #19543f;
+  --bad: #8c2c41;
+  --success-surface: #d8e6cb;
+  --loss-surface: #f1d5cc;
+  color: var(--ink);
+}
+[data-topic='history'] .ranking {
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--frame-radius);
+  background: var(--card-finish) var(--paper);
+}
+[data-topic='history'] .ranking li {
+  border-bottom-color: var(--line);
+}
+[data-topic='history'] :is(.info-card, .room-ticket) {
+  box-shadow:
+    inset 0 0 0 1px var(--line),
+    inset 0 0 0 3px var(--paper),
+    inset 0 0 0 4px #c3a46d;
+}
+.topic-caption {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  vertical-align: middle;
+}
+.topic-emblem > svg {
+  width: 1em;
+  height: 1em;
+}
+.topic-caption :is(.polygon, .topic-emblem) {
+  width: 20px;
+  height: 20px;
+  font-size: 1.2rem;
+}
+.tile-polygon > .topic-emblem[data-owned] {
+  width: 78%;
+  height: 78%;
+  border-radius: var(--frame-radius);
+  background: var(--owner-fill);
+  color: #fff7ed;
+  text-shadow: 0 1px 2px #201710a0;
+}
+.question-emblem {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border: 1px solid var(--line);
+  border-radius: var(--frame-radius);
+  background: var(--card-finish) var(--base-plate);
+  font-size: 1.9rem;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.rotate-message {
+  display: none;
+}
+@media (orientation: landscape) and (pointer: coarse) and (width < 820px) {
+  .app:not(.presenter) .screen {
+    display: none;
+  }
+  .app:not(.presenter) .rotate-message {
+    display: grid;
+    height: 100%;
+    place-items: center;
+    padding: 18px;
+    text-align: center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0s !important;
+    animation-delay: 0s !important;
+    transition-duration: 0s !important;
+  }
+}

@@ -1,23 +1,23 @@
-import type { CSSProperties } from 'react';
+import { type CSSProperties } from 'react';
 import {
-  Amphora,
-  Archive,
-  Castle,
   ChessBishop,
   ChessKing,
   ChessKnight,
   ChessQueen,
   ChessRook,
+  Landmark,
+  Amphora,
+  Archive,
+  Castle,
   Feather,
   Gem,
   Hexagon,
-  Landmark,
   MapPin,
   Orbit,
 } from 'lucide-react';
-import type { Mark, Topic } from '../../shared/game';
+import { type Mark, type Topic } from '../../../../../shared/game';
+import { type Strings } from '../../../i18n/strings';
 import Polygon from './Polygon';
-import type { Strings } from './strings';
 
 const chessPieces = [
   ChessRook,

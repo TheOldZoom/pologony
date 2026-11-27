@@ -1,8 +1,13 @@
 import { describe, expect, test } from 'bun:test';
-import { DEFAULT_SETTINGS, isGameSettings, type Topic } from '../shared/game';
-import * as game from './game';
-import { makeQuestion } from './questions';
-import { drawTopicQuestion } from './topicQuestions';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { lichessQuestion, startChessCache, type DailyPuzzles } from '../chess/cache';
+import { DEFAULT_SETTINGS, isGameSettings, type Topic } from '../../shared/game';
+import * as game from './index';
+import { customQuestionEntry, parseQuestionImport } from '../questions/custom';
+import { makeQuestion } from '../questions/polygons/generator';
+import { drawTopicQuestion } from '../questions/topicDeck';
 
 function setup(topic: Topic = 'chess') {
   let room = game.newRoom('ABCD', 'host', 'projector');
@@ -322,4 +327,289 @@ describe('projector moderation', () => {
     expect(removed.deadline).toBe(rolled.deadline);
     expect(removed.version).toBe(rolled.version);
   });
+});
+
+describe('classroom rules', () => {
+  test('charges for a hint once and only sends it to its buyer', () => {
+    const rolled = game.roll(game.start(setup('polygons'), 100), 200, [1, 2], 3);
+    expect(game.publicState(rolled, 200, 'alba').question?.hint).toBe('');
+    const bought = game.buyHint(rolled);
+    expect(bought.players[0].cash).toBe(1475);
+    expect(game.buyHint(bought)).toBe(bought);
+    expect(game.publicState(bought, 300, 'bruno').question?.hint).toBe('');
+    expect(game.publicState(bought, 300, 'alba').question?.hint).toBe(rolled.question?.hint);
+    expect(game.publicState(bought, 300, 'alba').question?.hintRevealed).toBe(true);
+    expect(bought.version).toBe(rolled.version);
+  });
+
+  test('pays once per three correct answers and resets the streak on timeout', () => {
+    let room: game.Room = game.start(setup('polygons'), 100);
+    function answerChance(correct: boolean) {
+      const landed = game.roll(
+        {
+          ...room,
+          turn: 0,
+          players: room.players.map((player) =>
+            player.id === 'alba' ? { ...player, pos: 0 } : player,
+          ),
+        },
+        200,
+        [1, 1],
+        3,
+      );
+      room = game.answer(landed, 300, correct ? landed.question!.correct : undefined);
+    }
+    answerChance(true);
+    answerChance(false);
+    expect(room.players[0].streak).toBe(0);
+    answerChance(true);
+    answerChance(true);
+    answerChance(true);
+    expect(room.players[0].cash).toBe(1900);
+    expect(room.events.filter((event) => event.kind === 'streak')).toHaveLength(1);
+  });
+
+  test('upgrades an owned tile once with a harder import and charges upgraded half rent', () => {
+    const deck = parseQuestionImport(
+      JSON.stringify(
+        ['easy', 'hard'].map((difficulty) => ({
+          difficulty,
+          en: {
+            prompt: difficulty,
+            options: ['A', 'B', 'C', 'D'],
+            correct: 1,
+            explanation: 'Solution',
+          },
+        })),
+      ),
+      false,
+    );
+    const setupRoom = setup('polygons');
+    const started = game.start(
+      {
+        ...setupRoom,
+        owners: { 3: 'alba' },
+        customDeck: deck,
+        settings: { ...setupRoom.settings, difficulty: 'easy', upgrades: true },
+      },
+      100,
+    );
+    const upgrade = game.roll(started, 200, [1, 2], 3);
+    expect(upgrade.question?.kind).toBe('upgrade');
+    expect(upgrade.question?.english.text).toBe('hard');
+    const upgraded = game.answer(upgrade, 300, 0);
+    expect(upgraded.upgrades?.[3]).toBe(true);
+    const visiting = game.roll(upgraded, 400, [1, 2], 3);
+    expect(visiting.question?.english.text).toBe('easy');
+    const paid = game.answer(visiting, 500, 0);
+    expect(paid.players[0].cash).toBe(1511.25);
+    expect(paid.players[1].cash).toBe(1488.75);
+    expect(game.rematch(game.finish(paid)).customDeck).toEqual(deck);
+  });
+
+  test('asks a REST escape question at the start of the next turn', () => {
+    const base = setup('polygons');
+    const started = game.start(
+      { ...base, settings: { ...base.settings, restChallenges: true } },
+      100,
+    );
+    const landed = game.roll(started, 200, [5, 5], 3);
+    expect(landed.players[0].resting).toBe(true);
+    const rest = game.skipTurn(game.skipTurn(landed, 300), 400);
+    expect(rest.phase).toBe('question');
+    expect(rest.question?.kind).toBe('rest');
+    expect(game.answer(rest, 500).turn).toBe(1);
+    const escaped = game.answer(rest, 500, rest.question?.correct);
+    expect(escaped.phase).toBe('roll');
+    expect(escaped.turn).toBe(0);
+    expect(escaped.players[0].resting).toBeUndefined();
+  });
+
+  test('bankruptcy transfers properties and ends with one survivor, while tax clears upgrades', () => {
+    const base = setup('polygons');
+    const started = game.start(
+      {
+        ...base,
+        players: base.players
+          .slice(0, 2)
+          .map((player, index) => (index ? player : { ...player, cash: 3 })),
+        owners: { 3: 'bruno', 5: 'alba' },
+        upgrades: { 5: true },
+        settings: { ...base.settings, bankruptcy: true },
+      },
+      100,
+    );
+    const rent = game.roll(started, 200, [1, 2], 3);
+    const settled = game.answer(rent, 300);
+    expect(settled.phase).toBe('over');
+    expect(settled.owners[5]).toBe('bruno');
+    expect(settled.upgrades?.[5]).toBe(true);
+    expect(settled.standings?.map(({ player }) => player.id)).toEqual(['bruno']);
+    expect(settled.players[0].eliminated).toBe(true);
+    expect(game.rematch(settled).players[0].eliminated).toBeUndefined();
+    const tax = game.roll(started, 200, [2, 2], 3);
+    expect(tax.owners[5]).toBeUndefined();
+    expect(tax.upgrades?.[5]).toBeUndefined();
+  });
+
+  test('recalculates majority after disconnects and preserves deadlines on resume', () => {
+    const started = game.start(setup('polygons'), 100);
+    const voted = game.voteToPause(started, 'alba', 200);
+    expect(game.voteToPause(voted, 'alba', 250)).toBe(voted);
+    expect(game.publicState(voted, 250, 'alba').pause?.voted).toBe(true);
+    const fewer = game.setConnected(game.setConnected(voted, 'bruno', false), 'cora', false);
+    const paused = game.checkPause(fewer, 1000);
+    expect(paused.pausedAt).toBe(1000);
+    expect(game.warnOneMinute(paused, 999_999)).toBe(paused);
+    const resumed = game.resume(paused, 6000);
+    expect(resumed.pausedAt).toBeUndefined();
+    expect(resumed.deadline).toBe(started.deadline! + 5000);
+    expect(resumed.endsAt).toBe(started.endsAt! + 5000);
+    expect(game.checkPause(voted, 45_300).pauseVote).toBeUndefined();
+  });
+
+  test('reopens custom questions with authored languages and aligned correct answers', () => {
+    const [question] = parseQuestionImport(
+      JSON.stringify([
+        {
+          difficulty: 'hard',
+          en: { prompt: 'English', options: ['A', 'B', 'C', 'D'], correct: 2, explanation: 'B' },
+          es: { prompt: 'Español', options: ['B', 'A', 'C', 'D'], correct: 1, explanation: 'B' },
+        },
+      ]),
+      false,
+    );
+    const entry = customQuestionEntry(question);
+    expect(entry.en?.options[entry.en.correct - 1]).toBe('B');
+    expect(entry.es?.options[entry.es.correct - 1]).toBe('B');
+    expect(parseQuestionImport(JSON.stringify([entry]), false)).toEqual([question]);
+
+    const [monolingual] = parseQuestionImport(JSON.stringify([{ es: entry.es }]), false);
+    expect(customQuestionEntry(monolingual).en).toBeUndefined();
+    expect(customQuestionEntry(monolingual).es?.prompt).toBe('Español');
+  });
+
+  test('imports CSV quotes and one-language questions, while giving a row for invalid input', () => {
+    const header =
+      'difficulty,es_prompt,es_option1,es_option2,es_option3,es_option4,es_correct,es_explanation';
+    const csv = header + '\r\nhard,"Una pregunta, con comillas ""hola""",A,B,C,D,2,Respuesta';
+    const [question] = parseQuestionImport(csv, true);
+    expect(question.english.text).toBe('Una pregunta, con comillas "hola"');
+    expect(question.correct).toBe(1);
+    expect(() => parseQuestionImport(csv + '\r\neasy,bad', true)).toThrow();
+    try {
+      parseQuestionImport(csv.replace(',2,', ',5,'), true);
+    } catch (error) {
+      expect(error).toMatchObject({ row: 2, issue: 'fields' });
+    }
+  });
+});
+
+test('validates cached chess lines, rotates 500 unique puzzles, and keeps the cache during failures', async () => {
+  if (!Bun.which('zstd')) return;
+  const directory = await mkdtemp(join(tmpdir(), 'pologony-test-'));
+  const originalFetch = globalThis.fetch;
+  const originalNow = Date.now;
+  const originalMode = process.env.POLOGONY_LICHESS;
+  process.env.POLOGONY_LICHESS = 'on';
+  let day = Date.UTC(2026, 10, 27, 8);
+  Date.now = () => day;
+  const fen = '8/1k3K2/8/8/4R3/8/5Q2/8 b - - 0 1';
+  const line = ['b7a6', 'e4b4', 'a6a5', 'f2b6'];
+  const rows = [900, 1650, 1900].flatMap((rating, tier) =>
+    Array.from({ length: [750, 600, 150][tier] }, (_, index) =>
+      [
+        String(tier) + index.toString(36).padStart(4, '0'),
+        fen,
+        line.join(' '),
+        rating,
+        80,
+        90,
+        140,
+        'mate mateIn2',
+        '',
+        '',
+        '',
+      ].join(','),
+    ),
+  );
+  const zipped = Bun.zstdCompressSync(rows.join('\n') + '\n');
+  let requested = 0;
+  globalThis.fetch = Object.assign(
+    async (_url: string | URL | Request, options?: RequestInit) => {
+      requested++;
+      if (requested === 1)
+        return new Response(new Blob([Uint8Array.from(zipped)]), {
+          headers: { etag: '"fixture"' },
+        });
+      expect(new Headers(options?.headers).get('if-none-match')).toBe('"fixture"');
+      if (requested === 2) return new Response(null, { status: 304 });
+      return new Response(null, { status: 503 });
+    },
+    { preconnect: originalFetch.preconnect },
+  ) as typeof fetch;
+  try {
+    const cache = startChessCache(directory);
+    await cache.tick();
+    const first = cache.current()!;
+    const puzzle = lichessQuestion(first.easy[0]);
+    expect(puzzle.chess?.position).toBe('8/5K2/k7/8/4R3/8/5Q2/8');
+    expect(puzzle.chessStages?.map((stage) => stage.options[stage.correct])).toEqual([
+      'e4b4',
+      'f2b6',
+    ]);
+    const ids = (daily: DailyPuzzles) =>
+      Object.values(daily)
+        .flat()
+        .map(({ id }) => id);
+    expect(new Set(ids(first)).size).toBe(500);
+
+    const restarted = startChessCache(directory);
+    await restarted.tick();
+    expect(requested).toBe(1);
+    expect(ids(restarted.current()!)).toEqual(ids(first));
+    day += 86_400_000;
+    await restarted.tick();
+    const second = ids(restarted.current()!);
+    expect(new Set(second).size).toBe(500);
+    expect(second.some((id) => ids(first).includes(id))).toBe(false);
+    day += 86_400_000;
+    await restarted.tick();
+    const third = ids(restarted.current()!);
+    expect(new Set([...ids(first), ...second, ...third]).size).toBe(1500);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Date.now = originalNow;
+    if (originalMode === undefined) delete process.env.POLOGONY_LICHESS;
+    else process.env.POLOGONY_LICHESS = originalMode;
+    await rm(directory, { recursive: true });
+  }
+}, 20_000);
+
+test('a cached position exposes every legal promotion and accepts alternate mates in one', () => {
+  const promotion = lichessQuestion({
+    id: 'promo',
+    fen: '8/1P5k/5K2/8/8/8/8/8 b - - 0 1',
+    moves: ['h7h8', 'b7b8q'],
+    rating: 1000,
+    themes: [],
+  });
+  expect(promotion.options.filter((move) => move.startsWith('b7b8')).sort()).toEqual([
+    'b7b8b',
+    'b7b8n',
+    'b7b8q',
+    'b7b8r',
+  ]);
+
+  const multipleMates = lichessQuestion({
+    id: 'mate1',
+    fen: '6k1/5K2/6Q1/8/8/8/8/8 b - - 0 1',
+    moves: ['g8h8', 'g6g7'],
+    rating: 1000,
+    themes: ['mateIn1'],
+  });
+  const accepted = multipleMates.chessStages?.[0].accepted ?? [];
+  expect(accepted.length).toBeGreaterThan(1);
+  for (const index of accepted)
+    expect(game.correctOption({ ...multipleMates, tile: 3, kind: 'buy' }, index)).toBe(true);
 });
